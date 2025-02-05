@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"runtime"
@@ -29,13 +30,15 @@ func BenchmarkNewPrivateKey(b *testing.B) {
 	}
 }
 
+var testPrefix = testBase64Prefix("GoodLuckWithThisPrefix")
+
 func BenchmarkFindPoint(b *testing.B) {
 	_, p0 := newPair()
 
 	i := b.N
 
 	findPoint(context.Background(), p0, randUint64(), func(p []byte) bool {
-		match := hasBase64Prefix(p, []byte("GoodLuckWithThisPrefix"))
+		match := testPrefix(p)
 		i--
 		return i == 0 || match
 	})
@@ -56,7 +59,7 @@ func BenchmarkFindBatchPoint(b *testing.B) {
 
 			b.ResetTimer()
 			findBatchPoint(ctx, p0, randUint64(), batchSize, func(p []byte) bool {
-				match := hasBase64Prefix(p, []byte("GoodLuckWithThisPrefix"))
+				match := testPrefix(p)
 				i--
 				return i == 0 || match
 			})
@@ -71,7 +74,7 @@ func BenchmarkFindPointParallel(b *testing.B) {
 	i.Store(int64(b.N))
 
 	findPointParallel(context.Background(), runtime.NumCPU(), p0, func(p []byte) bool {
-		match := hasBase64Prefix(p, []byte("GoodLuckWithThisPrefix"))
+		match := testPrefix(p)
 		return i.Add(-1) <= 0 || match
 	})
 }
@@ -106,4 +109,53 @@ func TestBatchBytesMontgomery(t *testing.T) {
 			t.Errorf("Unexpected allocations: %.0f", n)
 		}
 	})
+}
+
+func TestTestBase64Prefix(t *testing.T) {
+	plain := []byte("Hello World!")
+	encoded := base64.StdEncoding.EncodeToString([]byte(plain))
+
+	for i := 1; i <= len(encoded); i++ {
+		prefix := encoded[:i]
+
+		t.Run(prefix, func(t *testing.T) {
+			test := testBase64Prefix(prefix)
+			if !test([]byte(plain)) {
+				t.Errorf("Prefix mismatch: %q %q", plain, prefix)
+			}
+		})
+	}
+
+	assertEqual := func(a, b bool) {
+		t.Helper()
+		if a != b {
+			t.Error("<-- see")
+		}
+	}
+
+	// Single symbol is a 6-bit prefix
+	assertEqual(true, testBase64Prefix("A")([]byte{0}))
+	assertEqual(true, testBase64Prefix("A")([]byte{0b000000_01}))
+	assertEqual(true, testBase64Prefix("A")([]byte{0b000000_10}))
+	assertEqual(true, testBase64Prefix("A")([]byte{0b000000_11}))
+	assertEqual(false, testBase64Prefix("A")([]byte{0b000001_00}))
+
+	assertEqual(true, testBase64Prefix("B")([]byte{0b000001_00}))
+	assertEqual(true, testBase64Prefix("B")([]byte{0b000001_01}))
+	assertEqual(true, testBase64Prefix("B")([]byte{0b000001_10}))
+	assertEqual(true, testBase64Prefix("B")([]byte{0b000001_11}))
+	assertEqual(false, testBase64Prefix("B")([]byte{0}))
+	assertEqual(false, testBase64Prefix("B")([]byte{1}))
+
+	// Two symbols is a 12-bit prefix
+	assertEqual(true, testBase64Prefix("AA")([]byte{0, 0}))
+	assertEqual(true, testBase64Prefix("AA")([]byte{0, 0b0000_0001}))
+	assertEqual(true, testBase64Prefix("AB")([]byte{0b000000_00, 0b0001_0000}))
+	assertEqual(true, testBase64Prefix("AB")([]byte{0b000000_00, 0b0001_0001}))
+	assertEqual(true, testBase64Prefix("AB")([]byte{0b000000_00, 0b0001_0010}))
+	assertEqual(true, testBase64Prefix("BB")([]byte{0b000001_00, 0b0001_0000}))
+	assertEqual(false, testBase64Prefix("BB")([]byte{0b000001_01, 0b0001_0000}))
+
+	assertEqual(true, testBase64Prefix("AAA")([]byte{0, 0, 0}))
+	assertEqual(true, testBase64Prefix("AAA")([]byte{0, 0, 0b00_000001}))
 }

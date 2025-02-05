@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -49,9 +50,7 @@ func main() {
 		defer cancel()
 	}
 
-	test := func(p []byte) bool {
-		return hasBase64Prefix(p, []byte(*prefix))
-	}
+	test := testBase64Prefix(*prefix)
 
 	p, n, attempts := findPointParallel(ctx, runtime.NumCPU(), p0, test)
 
@@ -258,10 +257,56 @@ func decimalToBytes(d string) []byte {
 	return b
 }
 
-func hasBase64Prefix(p, prefix []byte) bool {
-	var dst [44]byte
-	base64.StdEncoding.Encode(dst[:], p)
-	return bytes.HasPrefix(dst[:], prefix)
+func testBase64Prefix(prefix string) func([]byte) bool {
+	decoded, decodedBits := decodeBase64PrefixBits(prefix)
+
+	if decodedBits%8 == 0 {
+		return func(b []byte) bool {
+			return bytes.HasPrefix(b, decoded)
+		}
+	}
+
+	decodedBytes := decodedBits / 8
+	shift := 8 - (decodedBits % 8)
+	tailByte := decoded[decodedBytes] >> shift
+	decoded = decoded[:decodedBytes]
+
+	return func(b []byte) bool {
+		return len(b) > decodedBytes && // must be long enough to check tail byte
+			bytes.Equal(b[:decodedBytes], decoded) &&
+			b[decodedBytes]>>shift == tailByte
+	}
+}
+
+// decodeBase64PrefixBits returns decoded prefix and number of decoded bits.
+func decodeBase64PrefixBits(prefix string) ([]byte, int) {
+	decodedBits := 6 * len(prefix)
+	tailBits := decodedBits % 8
+
+	// Parse prefix as base64 number
+	decodedInt := big.NewInt(0)
+	_64 := big.NewInt(64)
+	const stdEncoding = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i := 0; i < len(prefix); i++ {
+		if digit := strings.IndexByte(stdEncoding, prefix[i]); digit >= 0 {
+			decodedInt.Mul(decodedInt, _64)
+			decodedInt.Add(decodedInt, big.NewInt(int64(digit)))
+		} else if prefix[i] == '=' {
+			// skip
+		} else {
+			panic("invalid base64 byte: " + prefix[i:i+1])
+		}
+	}
+	if tailBits != 0 {
+		decodedInt.Mul(decodedInt, big.NewInt(1<<(8-tailBits)))
+	}
+	decoded := decodedInt.Bytes()
+
+	// left pad decoded prefix with zeros
+	buf := make([]byte, (decodedBits+7)/8)
+	copy(buf[len(buf)-len(decoded):], decoded)
+
+	return buf, decodedBits
 }
 
 func randUint64() uint64 {
