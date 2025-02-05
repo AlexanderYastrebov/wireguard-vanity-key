@@ -2,6 +2,4 @@ module github.com/AlexanderYastrebov/wireguard-vanity-key
 
 go 1.23.2
 
-require github.com/oasisprotocol/curve25519-voi v0.0.0-20230904125328-1f23a7beb09a
-
-require golang.org/x/sys v0.0.0-20220325203850-36772127a21f // indirect
+require filippo.io/edwards25519 v1.1.1-0.20250205130949-eef06506605b

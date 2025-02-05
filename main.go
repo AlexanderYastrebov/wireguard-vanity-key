@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/oasisprotocol/curve25519-voi/curve"
-	"github.com/oasisprotocol/curve25519-voi/curve/scalar"
+	"filippo.io/edwards25519"
+	"filippo.io/edwards25519/field"
 )
 
 var (
@@ -29,7 +29,7 @@ var (
 	smallScalar = scalarFromBytes(decimalToBytes("27742317777372353535851937790883648493")...)
 	// Ed25519 group's cofactor
 	scalarOffset = scalarFromBytes(8)
-	pointOffset  = new(curve.EdwardsPoint).MulBasepoint(curve.ED25519_BASEPOINT_TABLE, scalarOffset)
+	pointOffset  = new(edwards25519.Point).ScalarBaseMult(scalarOffset)
 )
 
 func main() {
@@ -49,7 +49,7 @@ func main() {
 		defer cancel()
 	}
 
-	test := func(p *curve.EdwardsPoint) bool {
+	test := func(p []byte) bool {
 		return hasBase64Prefix(p, []byte(*prefix))
 	}
 
@@ -60,10 +60,10 @@ func main() {
 	if p != nil {
 		s := adjustScalar(s0, n)
 		private = base64.StdEncoding.EncodeToString(scalarToKeyBytes(s))
-		public = base64.StdEncoding.EncodeToString(bytesMontgomery(p))
+		public = base64.StdEncoding.EncodeToString(p.BytesMontgomery())
 	}
 
-	duration := time.Now().Sub(start)
+	duration := time.Since(start)
 
 	fmt.Printf("%-44s %-44s %-10s %-10s %s\n", "private", "public", "attempts", "duration", "attempts/s")
 	fmt.Printf("%-44s %-44s %-10d %-10s %d\n", private, public, attempts, duration.Round(time.Second), time.Duration(attempts)*(time.Second)/duration)
@@ -73,31 +73,25 @@ func main() {
 	}
 }
 
-func newPair() (*scalar.Scalar, *curve.EdwardsPoint) {
+func newPair() (*edwards25519.Scalar, *edwards25519.Point) {
 	var key [32]byte
 	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
 		panic(err)
 	}
 
-	var wideBytes [64]byte
-	copy(wideBytes[:], key[:])
-	wideBytes[0] &= 248
-	wideBytes[31] &= 63
-	wideBytes[31] |= 64
-
-	s, err := new(scalar.Scalar).SetBytesModOrderWide(wideBytes[:])
+	s, err := edwards25519.NewScalar().SetBytesWithClamping(key[:])
 	if err != nil {
 		panic(err)
 	}
 
-	p := new(curve.EdwardsPoint).MulBasepoint(curve.ED25519_BASEPOINT_TABLE, s)
+	p := new(edwards25519.Point).ScalarBaseMult(s)
 
 	return s, p
 }
 
-func findPointParallel(ctx context.Context, workers int, p0 *curve.EdwardsPoint, test func(p *curve.EdwardsPoint) bool) (*curve.EdwardsPoint, uint64, uint64) {
+func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point, test func([]byte) bool) (*edwards25519.Point, uint64, uint64) {
 	type point struct {
-		p *curve.EdwardsPoint
+		p *edwards25519.Point
 		n uint64
 	}
 
@@ -114,7 +108,8 @@ func findPointParallel(ctx context.Context, workers int, p0 *curve.EdwardsPoint,
 			defer wg.Done()
 
 			skip := randUint64()
-			p, n := findPoint(gctx, p0, skip, test)
+			// p, n := findPoint(gctx, p0, skip, test)
+			p, n := findBatchPoint(gctx, p0, skip, 1024, test)
 
 			attempts.Add(n - skip)
 			if p != nil {
@@ -133,28 +128,71 @@ func findPointParallel(ctx context.Context, workers int, p0 *curve.EdwardsPoint,
 	}
 }
 
-func findPoint(ctx context.Context, p0 *curve.EdwardsPoint, skip uint64, test func(p *curve.EdwardsPoint) bool) (*curve.EdwardsPoint, uint64) {
-	skipOffset := new(curve.EdwardsPoint).Mul(pointOffset, scalarFromUint64(skip))
-	p := new(curve.EdwardsPoint).Add(p0, skipOffset)
-
+func findPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, test func([]byte) bool) (*edwards25519.Point, uint64) {
+	skipOffset := new(edwards25519.Point).ScalarMult(scalarFromUint64(skip), pointOffset)
+	p := new(edwards25519.Point).Add(p0, skipOffset)
 	n := skip
-	for ; !test(p); n++ {
+
+	var bm [32]byte
+	bytesMontgomery(p, &bm)
+
+	for ; !test(bm[:]); n++ {
 		select {
 		case <-ctx.Done():
 			return nil, n
 		default:
 			p.Add(p, pointOffset)
+			bytesMontgomery(p, &bm)
 		}
 	}
 	return p, n
 }
 
-func adjustScalar(s *scalar.Scalar, n uint64) *scalar.Scalar {
-	m := new(scalar.Scalar).Mul(scalarOffset, scalarFromUint64(n))
-	return m.Add(m, s)
+func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, batchSize int, test func([]byte) bool) (*edwards25519.Point, uint64) {
+	skipOffset := new(edwards25519.Point).ScalarMult(scalarFromUint64(skip), pointOffset)
+	p := new(edwards25519.Point).Add(p0, skipOffset)
+
+	n := skip
+
+	pts := make([]edwards25519.Point, batchSize)
+	u := make([]field.Element, batchSize)
+	scratch := make([][]field.Element, 4)
+
+	for i := range scratch {
+		scratch[i] = make([]field.Element, batchSize)
+	}
+
+	var bm [32]byte
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, n
+		default:
+		}
+
+		for i := range pts {
+			pts[i].Set(p)
+			p.Add(p, pointOffset)
+		}
+
+		batchBytesMontgomery(pts, u, scratch)
+
+		for i := range pts {
+			copy(bm[:], u[i].Bytes()) // eliminate field.Element.Bytes() allocations
+			if test(bm[:]) {
+				return &pts[i], n + uint64(i)
+			}
+		}
+
+		n += uint64(len(pts))
+	}
 }
 
-func scalarToKeyBytes(s *scalar.Scalar) []byte {
+func adjustScalar(s *edwards25519.Scalar, n uint64) *edwards25519.Scalar {
+	return edwards25519.NewScalar().MultiplyAdd(scalarOffset, scalarFromUint64(n), s)
+}
+
+func scalarToKeyBytes(s *edwards25519.Scalar) []byte {
 	// We can't use Scalars to add "l" and produce the aliases: any addition
 	// we do on the Scalar will be reduced immediately. But we can add
 	// "small", and then manually adjust the high-end byte, to produce an
@@ -176,10 +214,7 @@ func scalarToKeyBytes(s *scalar.Scalar) []byte {
 	// N+4,N+1,N+6,N+3. One of these values might be all zeros. That alias
 	// will survive the low-end clamping unchanged.
 
-	var sBytes [32]byte
-	s.ToBytes(sBytes[:])
-
-	lowBits := sBytes[0] & 0b111
+	lowBits := s.Bytes()[0] & 0b111
 	// Solve (lowBits + k*5) % 8 == 0 for k:
 	// k := [8]byte{0, 0, 6, 0, 4, 7, 0, 5}[lowBits]
 	k := [8]byte{0, 3, 6, 1, 4, 7, 2, 5}[lowBits]
@@ -187,28 +222,24 @@ func scalarToKeyBytes(s *scalar.Scalar) []byte {
 		panic("invalid scalar first byte (lowBits)")
 	}
 
-	m := new(scalar.Scalar).Mul(smallScalar, scalarFromBytes(k))
-	m.Add(m, s)
-
-	aliasBytes := make([]byte, 32)
-	m.ToBytes(aliasBytes)
+	aliasBytes := edwards25519.NewScalar().MultiplyAdd(smallScalar, scalarFromBytes(k), s).Bytes()
 	aliasBytes[31] += (k << 4)
 
 	return aliasBytes
 }
 
-func scalarFromBytes(x ...byte) *scalar.Scalar {
+func scalarFromBytes(x ...byte) *edwards25519.Scalar {
 	var xb [64]byte
 	copy(xb[:], x)
 
-	xs, err := new(scalar.Scalar).SetBytesModOrderWide(xb[:])
+	xs, err := edwards25519.NewScalar().SetUniformBytes(xb[:])
 	if err != nil {
 		panic(err)
 	}
 	return xs
 }
 
-func scalarFromUint64(n uint64) *scalar.Scalar {
+func scalarFromUint64(n uint64) *edwards25519.Scalar {
 	var nb [8]byte
 	binary.LittleEndian.PutUint64(nb[:], n)
 	return scalarFromBytes(nb[:]...)
@@ -227,9 +258,9 @@ func decimalToBytes(d string) []byte {
 	return b
 }
 
-func hasBase64Prefix(p *curve.EdwardsPoint, prefix []byte) bool {
+func hasBase64Prefix(p, prefix []byte) bool {
 	var dst [44]byte
-	base64.StdEncoding.Encode(dst[:], bytesMontgomery(p))
+	base64.StdEncoding.Encode(dst[:], p)
 	return bytes.HasPrefix(dst[:], prefix)
 }
 
@@ -242,8 +273,93 @@ func randUint64() uint64 {
 	return num
 }
 
-func bytesMontgomery(p *curve.EdwardsPoint) []byte {
-	var mp curve.MontgomeryPoint
-	mp.SetEdwards(p)
-	return mp[:]
+// bytesMontgomery is a copy of [edwards25519.Point.BytesMontgomery]
+// to eliminate allocations.
+//
+// bytesMontgomery uses:
+//
+//	1 addition
+//	1 subtraction
+//	1 invert = 254 squaring + 11 multiplications
+//	1 multiplication
+//
+// i.e. ~254+11+1 = 266 multiplications
+func bytesMontgomery(v *edwards25519.Point, buf *[32]byte) {
+	// RFC 7748, Section 4.1 provides the bilinear map to calculate the
+	// Montgomery u-coordinate
+	//
+	//              u = (1 + y) / (1 - y)
+	//
+	// where y = Y / Z and therefore
+	//
+	//              u = (Z + Y) / (Z - Y)
+
+	var n, r, u field.Element
+
+	_, Y, Z, _ := v.ExtendedCoordinates()
+	n.Add(Z, Y)                // n = Z + Y
+	r.Invert(r.Subtract(Z, Y)) // r = 1 / (Z - Y)
+	u.Multiply(&n, &r)         // u = n * r
+
+	copy(buf[:], u.Bytes())
+}
+
+// batchBytesMontgomery is equivalent to calling [edwards25519.Point.BytesMontgomery] for each point
+// except that it uses [vectorDivision] and thus uses less point multiplications.
+//
+// All input slices must be of the same length n.
+// Result bytes are encoded into u using scratch which should be at least 4 slices of length n.
+//
+// batchBytesMontgomery uses:
+//
+//	n additions
+//	n subtractions
+//	vectorDivision = 265+4*(n-1)+1 multiplications
+//
+// i.e. ~4*n multiplications for large n.
+func batchBytesMontgomery(pts []edwards25519.Point, u []field.Element, scratch [][]field.Element) {
+	x := scratch[0]
+	y := scratch[1]
+
+	// u = (Z + Y) / (Z - Y) = x / y
+	for i, v := range pts {
+		_, Y, Z, _ := v.ExtendedCoordinates()
+		x[i].Add(Z, Y)      // x = Z + Y
+		y[i].Subtract(Z, Y) // y = Z - Y
+	}
+
+	vectorDivision(x, y, u, scratch[2:]) // u = x / y
+}
+
+// vectorDivision calculates u = x / y using scratch.
+//
+// vectorDivision uses:
+//
+//	4*(n-1)+1 multiplications
+//	1 invert = ~265 multiplications
+//
+// i.e. ~265+4*(n-1)+1 multiplications
+//
+// Simultaneous field divisions: an extension of Montgomery's trick
+// David G. Harris
+// https://eprint.iacr.org/2008/199.pdf
+func vectorDivision(x, y, u []field.Element, scratch [][]field.Element) {
+	n := len(x)
+	r := scratch[0]
+	s := scratch[1]
+
+	r[0] = y[0]
+	for i := 1; i < n; i++ {
+		r[i].Multiply(&r[i-1], &y[i])
+		s[i].Multiply(&r[i-1], &x[i])
+	}
+
+	I := new(field.Element).Invert(&r[n-1])
+
+	t := I
+	for i := n - 1; i > 0; i-- {
+		u[i].Multiply(t, &s[i])
+		t.Multiply(t, &y[i])
+	}
+	u[0].Multiply(t, &x[0])
 }
