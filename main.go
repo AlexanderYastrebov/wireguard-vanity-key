@@ -52,12 +52,14 @@ func main() {
 
 	test := testBase64Prefix(*prefix)
 
-	p, n, attempts := findPointParallel(ctx, runtime.NumCPU(), p0, test)
+	n, attempts, ok := findPointParallel(ctx, runtime.NumCPU(), p0, test)
 
 	private := "-"
 	public := *prefix + "..."
-	if p != nil {
+	if ok {
 		s := adjustScalar(s0, n)
+		p := new(edwards25519.Point).ScalarBaseMult(s)
+
 		private = base64.StdEncoding.EncodeToString(scalarToKeyBytes(s))
 		public = base64.StdEncoding.EncodeToString(p.BytesMontgomery())
 	}
@@ -67,7 +69,7 @@ func main() {
 	fmt.Printf("%-44s %-44s %-10s %-10s %s\n", "private", "public", "attempts", "duration", "attempts/s")
 	fmt.Printf("%-44s %-44s %-10d %-10s %.0f\n", private, public, attempts, duration.Round(time.Second), float64(attempts)/duration.Seconds())
 
-	if p == nil {
+	if !ok {
 		os.Exit(1)
 	}
 }
@@ -88,13 +90,8 @@ func newPair() (*edwards25519.Scalar, *edwards25519.Point) {
 	return s, p
 }
 
-func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point, test func([]byte) bool) (*edwards25519.Point, uint64, uint64) {
-	type point struct {
-		p *edwards25519.Point
-		n uint64
-	}
-
-	result := make(chan point, workers)
+func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point, test func([]byte) bool) (uint64, uint64, bool) {
+	result := make(chan uint64, workers)
 	var attempts atomic.Uint64
 
 	gctx, cancel := context.WithCancel(ctx)
@@ -107,11 +104,11 @@ func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point,
 			defer wg.Done()
 
 			skip := randUint64()
-			p, n := findBatchPoint(gctx, p0, skip, 1024, test)
+			n, ok := findBatchPoint(gctx, p0, skip, 1024, test)
 
 			attempts.Add(n - skip)
-			if p != nil {
-				result <- point{p, n}
+			if ok {
+				result <- n
 				cancel()
 			}
 		}()
@@ -119,20 +116,21 @@ func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point,
 	wg.Wait()
 
 	select {
-	case r := <-result:
-		return r.p, r.n, attempts.Load()
+	case n := <-result:
+		return n, attempts.Load(), true
 	case <-ctx.Done():
-		return nil, 0, attempts.Load()
+		return 0, attempts.Load(), false
 	}
 }
 
-func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, batchSize int, test func([]byte) bool) (*edwards25519.Point, uint64) {
+func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, batchSize int, test func([]byte) bool) (uint64, bool) {
 	skipOffset := new(edwards25519.Point).ScalarMult(scalarFromUint64(skip), pointOffset)
 	p := new(edwards25519.Point).Add(p0, skipOffset)
 
 	n := skip
 
-	pts := make([]edwards25519.Point, batchSize)
+	offsets := make([]projCached, batchSize)
+	projections := make([]projP1xP1, batchSize)
 	u := make([]field.Element, batchSize)
 	scratch := make([][]field.Element, 4)
 
@@ -140,29 +138,39 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		scratch[i] = make([]field.Element, batchSize)
 	}
 
+	offsets[0].zero()
+	oi := new(edwards25519.Point).Set(pointOffset)
+	for i := 1; i < len(offsets); i++ {
+		offsets[i].fromP3(oi)
+		oi.Add(oi, pointOffset)
+	}
+	batchOffset := new(projCached).fromP3(oi)
+
+	pp := new(projCached).fromP3(p)
+
 	var bm [32]byte
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, n
+			return n, false
 		default:
 		}
 
-		for i := range pts {
-			pts[i].Set(p)
-			p.Add(p, pointOffset)
+		for i := range projections {
+			projections[i].add(pp, &offsets[i])
 		}
 
-		batchBytesMontgomery(pts, u, scratch)
+		batchProjectionBytesMontgomery(projections, u, scratch)
 
-		for i := range pts {
+		for i := range projections {
 			copy(bm[:], u[i].Bytes()) // eliminate field.Element.Bytes() allocations
 			if test(bm[:]) {
-				return &pts[i], n + uint64(i)
+				return n + uint64(i), true
 			}
 		}
 
-		n += uint64(len(pts))
+		n += uint64(batchSize)
+		pp.fromP1xP1(new(projP1xP1).add(pp, batchOffset))
 	}
 }
 
@@ -327,6 +335,27 @@ func batchBytesMontgomery(pts []edwards25519.Point, u []field.Element, scratch [
 	vectorDivision(x, y, u, scratch[2:]) // u = x / y
 }
 
+func batchProjectionBytesMontgomery(projections []projP1xP1, u []field.Element, scratch [][]field.Element) {
+	// RFC 7748, Section 4.1 provides the bilinear map to calculate the
+	// Montgomery u-coordinate
+	//
+	// 		u = (Z + Y) / (Z - Y)
+	//
+	// where Y = pZ * pY and Z = pZ * pT and therefore
+	//
+	// 		u = (pT + pY) / (pT - pY) = x / y
+	//
+	x := scratch[0]
+	y := scratch[1]
+
+	for i, p := range projections {
+		x[i].Add(&p.T, &p.Y)
+		y[i].Subtract(&p.T, &p.Y)
+	}
+
+	vectorDivision(x, y, u, scratch[2:]) // u = x / y
+}
+
 // vectorDivision calculates u = x / y using scratch.
 //
 // vectorDivision uses:
@@ -358,4 +387,70 @@ func vectorDivision(x, y, u []field.Element, scratch [][]field.Element) {
 		t.Multiply(t, &y[i])
 	}
 	u[0].Multiply(t, &x[0])
+}
+
+type (
+	projP1xP1 struct {
+		X, Y, Z, T field.Element
+	}
+	projCached struct {
+		YplusX, YminusX, Z, T, T2d field.Element
+	}
+)
+
+var (
+	// d is a constant in the curve equation.
+	d, _ = new(field.Element).SetBytes(decimalToBytes("37095705934669439343138083508754565189542113879843219016388785533085940283555"))
+	d2   = new(field.Element).Add(d, d)
+)
+
+func (v *projCached) zero() *projCached {
+	v.YplusX.One()
+	v.YminusX.One()
+	v.Z.One()
+	v.T.Zero()
+	v.T2d.Zero()
+	return v
+}
+
+func (v *projCached) fromP3(p *edwards25519.Point) *projCached {
+	pX, pY, pZ, pT := p.ExtendedCoordinates()
+
+	v.YplusX.Add(pY, pX)
+	v.YminusX.Subtract(pY, pX)
+	v.Z.Set(pZ)
+	v.T.Set(pT)
+	v.T2d.Multiply(pT, d2)
+	return v
+}
+
+func (v *projCached) fromP1xP1(p *projP1xP1) *projCached {
+	pX := new(field.Element).Multiply(&p.X, &p.T)
+	pY := new(field.Element).Multiply(&p.Y, &p.Z)
+	pZ := new(field.Element).Multiply(&p.Z, &p.T)
+	pT := new(field.Element).Multiply(&p.X, &p.Y)
+
+	v.YplusX.Add(pY, pX)
+	v.YminusX.Subtract(pY, pX)
+	v.Z.Set(pZ)
+	v.T.Set(pT)
+	v.T2d.Multiply(pT, d2)
+	return v
+}
+
+func (v *projP1xP1) add(p, q *projCached) *projP1xP1 {
+	var PP, MM, TT2d, ZZ2 field.Element
+
+	PP.Multiply(&p.YplusX, &q.YplusX)
+	MM.Multiply(&p.YminusX, &q.YminusX)
+	TT2d.Multiply(&p.T, &q.T2d)
+	ZZ2.Multiply(&p.Z, &q.Z)
+
+	ZZ2.Add(&ZZ2, &ZZ2)
+
+	v.X.Subtract(&PP, &MM)
+	v.Y.Add(&PP, &MM)
+	v.Z.Add(&ZZ2, &TT2d)
+	v.T.Subtract(&ZZ2, &TT2d)
+	return v
 }
