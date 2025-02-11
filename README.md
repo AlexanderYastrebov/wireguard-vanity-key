@@ -53,6 +53,18 @@ PASS
 ok      github.com/AlexanderYastrebov/wireguard-vanity-key      21.154s
 ```
 
+Time to get n-symbol prefix at rate 18'000'000 keys per second with probability of:
+```
+n                  50%                  95%                  99%
+4              0:00:01              0:00:03              0:00:04
+5              0:00:41              0:02:59              0:04:35
+6              0:44:06              3:10:37              4:53:01
+7      1 day, 23:02:41     8 days, 11:19:25     13 days, 0:33:28
+8   125 days, 10:51:28    542 days, 4:42:40   833 days, 11:42:23
+```
+I.e. you may expect a match for a 5 character prefix after
+41 seconds 50% of the time and after 4-5 minutes to be 99% sure.
+
 ## Similar projects
 
 * [wireguard-vanity-address](https://github.com/warner/wireguard-vanity-address)
@@ -60,3 +72,4 @@ ok      github.com/AlexanderYastrebov/wireguard-vanity-key      21.154s
 * [Wireguard-Vanity-Key-Searcher](https://github.com/volleybus/Wireguard-Vanity-Key-Searcher)
 * [wgmine](https://github.com/thatsed/wgmine)
 * [Vanity](https://github.com/samuel-lucas6/Vanity)
+* [mkp224o](https://github.com/cathugger/mkp224o)
