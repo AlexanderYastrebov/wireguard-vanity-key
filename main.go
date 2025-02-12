@@ -34,42 +34,139 @@ var (
 )
 
 func main() {
-	start := time.Now()
+	if len(os.Args) > 1 && os.Args[1] == "add" {
+		cmdAdd(os.Args[2:])
+		return
+	}
 
-	prefix := flag.String("prefix", "AY/", "prefix of base64-encoded public key")
-	timeout := flag.Duration("timeout", 0, "stop after specified timeout")
+	start := time.Now()
+	config := struct {
+		prefix  string
+		timeout time.Duration
+		public  string
+		output  string
+	}{}
+
+	flag.StringVar(&config.prefix, "prefix", "AY/", "prefix of base64-encoded public key")
+	flag.DurationVar(&config.timeout, "timeout", 0, "stop after specified timeout")
+	flag.StringVar(&config.public, "public", "", "start from specified public key")
+	flag.StringVar(&config.output, "output", "", "use \"offset\" to print offset only")
 	flag.Parse()
 
-	s0, p0 := newPair()
+	var s0 *edwards25519.Scalar
+	var p0 *edwards25519.Point
+	var err error
+
+	if config.public != "" {
+		p0, err = parsePublicKey(config.public)
+		if err != nil {
+			panic(err)
+		}
+	} else {
+		s0, p0 = newPair()
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if *timeout != 0 {
-		ctx, cancel = context.WithTimeout(ctx, *timeout)
+	if config.timeout != 0 {
+		ctx, cancel = context.WithTimeout(ctx, config.timeout)
 		defer cancel()
 	}
 
-	test := testBase64Prefix(*prefix)
+	test := testBase64Prefix(config.prefix)
 
 	n, attempts, ok := findPointParallel(ctx, runtime.NumCPU(), p0, test)
 
 	private := "-"
-	public := *prefix + "..."
+	public := config.prefix + "..."
 	if ok {
-		s := adjustScalar(s0, n)
-		p := new(edwards25519.Point).ScalarBaseMult(s)
+		scalarN := scalarFromUint64(n)
 
-		private = base64.StdEncoding.EncodeToString(scalarToKeyBytes(s))
+		po := new(edwards25519.Point).ScalarMult(scalarN, pointOffset)
+		p := new(edwards25519.Point).Add(p0, po)
 		public = base64.StdEncoding.EncodeToString(p.BytesMontgomery())
+
+		if s0 != nil {
+			so := new(edwards25519.Scalar).Multiply(scalarN, scalarOffset)
+			s := new(edwards25519.Scalar).Add(s0, so)
+			private = base64.StdEncoding.EncodeToString(scalarToKeyBytes(s))
+		}
 	}
 
-	duration := time.Since(start)
+	if config.output == "offset" {
+		fmt.Printf("%d\n", n)
+	} else {
+		duration := time.Since(start)
 
-	fmt.Printf("%-44s %-44s %-10s %-10s %s\n", "private", "public", "attempts", "duration", "attempts/s")
-	fmt.Printf("%-44s %-44s %-10d %-10s %.0f\n", private, public, attempts, duration.Round(time.Second), float64(attempts)/duration.Seconds())
+		fmt.Printf("%-44s %-44s %-10s %-10s %s\n", "private", "public", "attempts", "duration", "attempts/s")
+		fmt.Printf("%-44s %-44s %-10d %-10s %.0f\n", private, public, attempts, duration.Round(time.Second), float64(attempts)/duration.Seconds())
+	}
 
 	if !ok {
+		os.Exit(1)
+	}
+}
+
+func cmdAdd(args []string) {
+	config := struct {
+		offset uint64
+		prefix string
+	}{}
+
+	fs := flag.NewFlagSet("add", flag.ExitOnError)
+	fs.Uint64Var(&config.offset, "offset", 0, "add specified offset to the private key")
+	fs.StringVar(&config.prefix, "prefix", "", "prefix of base64-encoded public key")
+	fs.Parse(args)
+
+	in, err := io.ReadAll(io.LimitReader(os.Stdin, 44))
+	if err != nil {
+		panic(err)
+	}
+	private := make([]byte, base64.StdEncoding.DecodedLen(len(in)))
+	if n, err := base64.StdEncoding.Decode(private, in); err != nil {
+		panic(err)
+	} else if n != 32 {
+		panic(fmt.Sprintf("Wrong private key length: %d", n))
+	} else {
+		private = private[:n]
+	}
+
+	s, _ := newPairFrom(private)
+
+	// Worker starts search from a public key which corresponds to two points P and -P
+	// but [parsePublicKey] returns (arbitrary?) one.
+	// To find the right private key calculate both
+	//     s + offset*scalarOffset
+	//     s - offset*scalarOffset
+	// and pick the one whose public key has the right prefix.
+	so := edwards25519.NewScalar().Multiply(scalarFromUint64(config.offset), scalarOffset)
+
+	sPlus := edwards25519.NewScalar().Add(s, so)
+	sMinus := edwards25519.NewScalar().Subtract(s, so)
+
+	skPlus := base64.StdEncoding.EncodeToString(scalarToKeyBytes(sPlus))
+	skMinus := base64.StdEncoding.EncodeToString(scalarToKeyBytes(sMinus))
+
+	pPlus := new(edwards25519.Point).ScalarBaseMult(sPlus)
+	pkPlus := base64.StdEncoding.EncodeToString(pPlus.BytesMontgomery())
+
+	pMinus := new(edwards25519.Point).ScalarBaseMult(sMinus)
+	pkMinus := base64.StdEncoding.EncodeToString(pMinus.BytesMontgomery())
+
+	if config.prefix != "" {
+		if strings.HasPrefix(pkPlus, config.prefix) {
+			fmt.Println(skPlus)
+		} else if strings.HasPrefix(pkMinus, config.prefix) {
+			fmt.Println(skMinus)
+		} else {
+			panic("prefix mismatch")
+		}
+	} else {
+		fmt.Println(skPlus)
+		fmt.Println(pkPlus)
+		fmt.Println(skMinus)
+		fmt.Println(pkMinus)
 		os.Exit(1)
 	}
 }
@@ -79,8 +176,11 @@ func newPair() (*edwards25519.Scalar, *edwards25519.Point) {
 	if _, err := io.ReadFull(rand.Reader, key[:]); err != nil {
 		panic(err)
 	}
+	return newPairFrom(key[:])
+}
 
-	s, err := edwards25519.NewScalar().SetBytesWithClamping(key[:])
+func newPairFrom(key []byte) (*edwards25519.Scalar, *edwards25519.Point) {
+	s, err := edwards25519.NewScalar().SetBytesWithClamping(key)
 	if err != nil {
 		panic(err)
 	}
@@ -88,6 +188,31 @@ func newPair() (*edwards25519.Scalar, *edwards25519.Point) {
 	p := new(edwards25519.Point).ScalarBaseMult(s)
 
 	return s, p
+}
+
+// parsePublicKey decodes base64-encoded public key
+// and returns corresponding [edwards25519.Point] or error.
+//
+// https://datatracker.ietf.org/doc/html/rfc7748#section-4.1
+func parsePublicKey(pk string) (*edwards25519.Point, error) {
+	pkb, err := base64.StdEncoding.DecodeString(pk)
+	if err != nil {
+		return nil, err
+	} else if len(pkb) != 32 {
+		return nil, fmt.Errorf("wrong public key length")
+	}
+
+	u, _ := new(field.Element).SetBytes(pkb)
+
+	// y = (u - 1) / (u + 1)
+	var y, n, d, r field.Element
+
+	n.Subtract(u, new(field.Element).One())
+	d.Add(u, new(field.Element).One())
+	r.Invert(&d)
+	y.Multiply(&n, &r)
+
+	return new(edwards25519.Point).SetBytes(y.Bytes())
 }
 
 func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point, test func([]byte) bool) (uint64, uint64, bool) {
@@ -172,10 +297,6 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		n += uint64(batchSize)
 		pp.fromP1xP1(new(projP1xP1).add(pp, batchOffset))
 	}
-}
-
-func adjustScalar(s *edwards25519.Scalar, n uint64) *edwards25519.Scalar {
-	return edwards25519.NewScalar().MultiplyAdd(scalarOffset, scalarFromUint64(n), s)
 }
 
 func scalarToKeyBytes(s *edwards25519.Scalar) []byte {

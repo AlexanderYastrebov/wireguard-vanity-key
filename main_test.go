@@ -147,3 +147,24 @@ func TestTestBase64Prefix(t *testing.T) {
 	assertEqual(true, testBase64Prefix("AAA")([]byte{0, 0, 0}))
 	assertEqual(true, testBase64Prefix("AAA")([]byte{0, 0, 0b00_000001}))
 }
+
+func TestParsePublicKey(t *testing.T) {
+	for _, pk := range []string{
+		"QiyOemIn17yhNQs+K7cnn3iXuHu2hUt4PGDoAxGuMHk=",
+		"vQnB//PF0URzwwsH0b1ff7a0P3jLKbrOCdLiTkWkvQA=",
+		"3nN+Tj4J/e99YWD6TFMvhfMNJCrORoSf8ommtXeXvBs=",
+		"Fo8iOSvqtfDjtBALpwGALNiwaZNgMrQYXIEDB2oU6lQ=",
+		"YR3nSufwy4r5FuCE7GujLSLssyVJ6iKy2utbUCQelh4=",
+	} {
+		t.Run(pk, func(t *testing.T) {
+			p, err := parsePublicKey(pk)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if got := base64.StdEncoding.EncodeToString(p.BytesMontgomery()); got != pk {
+				t.Errorf("pk: %s, got: %s", pk, got)
+			}
+		})
+	}
+}

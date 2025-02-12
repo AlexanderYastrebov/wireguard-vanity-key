@@ -53,6 +53,10 @@ PASS
 ok      github.com/AlexanderYastrebov/wireguard-vanity-key      21.154s
 ```
 
+## Blind search
+
+The tool supports blind search, i.e. when worker does not know the private key, see [demo-blind.sh](demo-blind.sh).
+
 ## Similar projects
 
 * [wireguard-vanity-address](https://github.com/warner/wireguard-vanity-address)
