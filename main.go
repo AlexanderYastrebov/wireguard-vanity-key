@@ -31,6 +31,7 @@ var (
 	// Ed25519 group's cofactor
 	scalarOffset = scalarFromBytes(8)
 	pointOffset  = new(edwards25519.Point).ScalarBaseMult(scalarOffset)
+	feTwo        = new(field.Element).Add(new(field.Element).One(), new(field.Element).One())
 )
 
 func main() {
@@ -254,7 +255,7 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 
 	n := skip
 
-	offsets := make([]projCached, batchSize)
+	offsets := make([]affineCached, batchSize)
 	projections := make([]projP1xP1, batchSize)
 	u := make([]field.Element, batchSize)
 	scratch := make([][]field.Element, 4)
@@ -269,9 +270,9 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		offsets[i].fromP3(oi)
 		oi.Add(oi, pointOffset)
 	}
-	batchOffset := new(projCached).fromP3(oi)
+	batchOffset := new(affineCached).fromP3(oi)
 
-	pp := new(projCached).fromP3(p)
+	pa := new(affineCached).fromP3(p)
 
 	var bm [32]byte
 	for {
@@ -282,7 +283,7 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		}
 
 		for i := range projections {
-			projections[i].add(pp, &offsets[i])
+			projections[i].addAffine(pa, &offsets[i])
 		}
 
 		batchProjectionBytesMontgomery(projections, u, scratch)
@@ -295,7 +296,7 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		}
 
 		n += uint64(batchSize)
-		pp.fromP1xP1(new(projP1xP1).add(pp, batchOffset))
+		pa.fromP1xP1(new(projP1xP1).addAffine(pa, batchOffset))
 	}
 }
 
@@ -514,8 +515,9 @@ type (
 	projP1xP1 struct {
 		X, Y, Z, T field.Element
 	}
-	projCached struct {
-		YplusX, YminusX, Z, T, T2d field.Element
+
+	affineCached struct {
+		YplusX, YminusX, T, T2d field.Element
 	}
 )
 
@@ -525,27 +527,30 @@ var (
 	d2   = new(field.Element).Add(d, d)
 )
 
-func (v *projCached) zero() *projCached {
+func (v *affineCached) zero() *affineCached {
 	v.YplusX.One()
 	v.YminusX.One()
-	v.Z.One()
 	v.T.Zero()
 	v.T2d.Zero()
 	return v
 }
 
-func (v *projCached) fromP3(p *edwards25519.Point) *projCached {
+func (v *affineCached) fromP3(p *edwards25519.Point) *affineCached {
 	pX, pY, pZ, pT := p.ExtendedCoordinates()
 
 	v.YplusX.Add(pY, pX)
 	v.YminusX.Subtract(pY, pX)
-	v.Z.Set(pZ)
-	v.T.Set(pT)
-	v.T2d.Multiply(pT, d2)
+
+	var invZ field.Element
+	invZ.Invert(pZ)
+	v.YplusX.Multiply(&v.YplusX, &invZ)
+	v.YminusX.Multiply(&v.YminusX, &invZ)
+	v.T.Multiply(pT, &invZ)
+	v.T2d.Multiply(&v.T, d2)
 	return v
 }
 
-func (v *projCached) fromP1xP1(p *projP1xP1) *projCached {
+func (v *affineCached) fromP1xP1(p *projP1xP1) *affineCached {
 	pX := new(field.Element).Multiply(&p.X, &p.T)
 	pY := new(field.Element).Multiply(&p.Y, &p.Z)
 	pZ := new(field.Element).Multiply(&p.Z, &p.T)
@@ -553,25 +558,28 @@ func (v *projCached) fromP1xP1(p *projP1xP1) *projCached {
 
 	v.YplusX.Add(pY, pX)
 	v.YminusX.Subtract(pY, pX)
-	v.Z.Set(pZ)
-	v.T.Set(pT)
-	v.T2d.Multiply(pT, d2)
+
+	var invZ field.Element
+	invZ.Invert(pZ)
+	v.YplusX.Multiply(&v.YplusX, &invZ)
+	v.YminusX.Multiply(&v.YminusX, &invZ)
+	v.T.Multiply(pT, &invZ)
+	v.T2d.Multiply(&v.T, d2)
 	return v
 }
 
-func (v *projP1xP1) add(p, q *projCached) *projP1xP1 {
-	var PP, MM, TT2d, ZZ2 field.Element
+func (v *projP1xP1) addAffine(p, q *affineCached) *projP1xP1 {
+	var PP, MM, TT2d field.Element
 
 	PP.Multiply(&p.YplusX, &q.YplusX)
 	MM.Multiply(&p.YminusX, &q.YminusX)
 	TT2d.Multiply(&p.T, &q.T2d)
-	ZZ2.Multiply(&p.Z, &q.Z)
 
-	ZZ2.Add(&ZZ2, &ZZ2)
+	Z2 := feTwo
 
 	v.X.Subtract(&PP, &MM)
 	v.Y.Add(&PP, &MM)
-	v.Z.Add(&ZZ2, &TT2d)
-	v.T.Subtract(&ZZ2, &TT2d)
+	v.Z.Add(Z2, &TT2d)
+	v.T.Subtract(Z2, &TT2d)
 	return v
 }
