@@ -256,7 +256,7 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 	n := skip
 
 	offsets := make([]affineCached, batchSize)
-	projections := make([]projP1xP1, batchSize)
+	projections := make([]projYT, batchSize)
 	u := make([]field.Element, batchSize)
 	scratch := make([][]field.Element, 4)
 
@@ -457,7 +457,7 @@ func batchBytesMontgomery(pts []edwards25519.Point, u []field.Element, scratch [
 	vectorDivision(x, y, u, scratch[2:]) // u = x / y
 }
 
-func batchProjectionBytesMontgomery(projections []projP1xP1, u []field.Element, scratch [][]field.Element) {
+func batchProjectionBytesMontgomery(projections []projYT, u []field.Element, scratch [][]field.Element) {
 	// RFC 7748, Section 4.1 provides the bilinear map to calculate the
 	// Montgomery u-coordinate
 	//
@@ -518,6 +518,10 @@ type (
 
 	affineCached struct {
 		YplusX, YminusX, T, T2d field.Element
+	}
+
+	projYT struct {
+		Y, T field.Element
 	}
 )
 
@@ -580,6 +584,22 @@ func (v *projP1xP1) addAffine(p, q *affineCached) *projP1xP1 {
 	v.X.Subtract(&PP, &MM)
 	v.Y.Add(&PP, &MM)
 	v.Z.Add(Z2, &TT2d)
+	v.T.Subtract(Z2, &TT2d)
+	return v
+}
+
+func (v *projYT) addAffine(p, q *affineCached) *projYT {
+	var PP, MM, TT2d field.Element
+
+	PP.Multiply(&p.YplusX, &q.YplusX)
+	MM.Multiply(&p.YminusX, &q.YminusX)
+	TT2d.Multiply(&p.T, &q.T2d)
+
+	Z2 := feTwo
+
+	// v.X.Subtract(&PP, &MM)
+	v.Y.Add(&PP, &MM)
+	// v.Z.Add(Z2, &TT2d)
 	v.T.Subtract(Z2, &TT2d)
 	return v
 }
