@@ -31,27 +31,30 @@ $ docker run  ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest -prefix=202
 
 ## Performance
 
-The tool checks ~18'000'000 keys per second on a test machine:
+The tool checks ~26'000'000 keys per second on a test machine:
 
 ```console
-$ go test . -run=NONE -bench=BenchmarkFindPointParallel -benchmem -count=10
-goos: linux
-goarch: amd64
-pkg: github.com/AlexanderYastrebov/wireguard-vanity-key
-cpu: Intel(R) Core(TM) i5-8350U CPU @ 1.70GHz
-BenchmarkFindPointParallel-8    19739348                54.33 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    19185619                55.42 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    19316592                56.08 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18855543                56.95 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18705961                56.46 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18718236                56.45 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18693268                56.78 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18495776                57.85 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18160232                58.81 ns/op            0 B/op          0 allocs/op
-BenchmarkFindPointParallel-8    18100197                57.53 ns/op            0 B/op          0 allocs/op
-PASS
-ok      github.com/AlexanderYastrebov/wireguard-vanity-key      21.154s
+$ go run . -prefix=GoodLuckWithThisPrefix -timeout=20s
+private                                      public                                       attempts   duration   attempts/s
+-                                            GoodLuckWithThisPrefix...                    520729600  20s        26016401
 ```
+
+In practice it finds 4-character prefix in a second and 5-character prefix in a minute:
+```console
+$ while go run . -prefix=AYAYA ; do : ; done
+private                                      public                                       attempts   duration   attempts/s
+OM9WvIxO90NRnHpMLBYbKCwRxj1KcwWVfo5EO1vftls= AYAYAgcnXbdsMwLB+nR0kkWDpIkMr+3thhfGnBEvTmM= 515859548  23s        22328225
+private                                      public                                       attempts   duration   attempts/s
+eEbiqUhcUrH6Uj1p7cycgTOspY6fMxxImSNNr1YvaEg= AYAYA4yow92Ks1wnbQeceKEWIYHhaRyezomUz9SQJic= 350598404  19s        18060407
+private                                      public                                       attempts   duration   attempts/s
+OOkjEu4elrWJ4MD+OxB2kvUcKdyo482E3G3Y/tLBsmI= AYAYAW4yGEUVT/IkX3T6ZZTnz3yPS1lPxiRe0yhOCCs= 260273230  14s        17972036
+private                                      public                                       attempts   duration   attempts/s
++BWkcGvbkXFxNgxIrAYyJoMF1R6R3eguv5NyMsdlaEA= AYAYAQEsY0gagwZ5lGLRQYfxQ+5rl83LOPmaASvASFQ= 1094012149 56s        19446702
+private                                      public                                       attempts   duration   attempts/s
+aG7Rakjbn1kpc2HN7fUz1u/ZrTcYziXg7OJq2EcMWFU= AYAYAe9QZdXn36CrkOK8aoD8h92mbEHCQt1QdTBARjY= 1088287697 56s        19483959
+```
+
+Each additional character increases search time by a factor of 64.
 
 ## Blind search
 

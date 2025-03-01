@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"reflect"
 	"runtime"
 	"testing"
 
 	"filippo.io/edwards25519"
-	"filippo.io/edwards25519/field"
 )
 
 func BenchmarkNewPrivateKey(b *testing.B) {
@@ -53,38 +52,6 @@ func BenchmarkFindPointParallel(b *testing.B) {
 
 	b.ResetTimer()
 	findPointParallel(context.Background(), min(runtime.NumCPU(), b.N), p0, testPrefix, uint64(b.N))
-}
-
-func TestBatchBytesMontgomery(t *testing.T) {
-	pts := make([]edwards25519.Point, 64)
-	u := make([]field.Element, len(pts))
-	scratch := make([][]field.Element, 4)
-
-	for i := range scratch {
-		scratch[i] = make([]field.Element, len(pts))
-	}
-
-	for i := range pts {
-		_, p := newPair()
-		pts[i].Set(p)
-	}
-
-	batchBytesMontgomery(pts, u, scratch)
-
-	for i, p := range pts {
-		if !bytes.Equal(p.BytesMontgomery(), u[i].Bytes()) {
-			t.Errorf("Wrong montgomery bytes")
-		}
-	}
-
-	t.Run("no allocs", func(t *testing.T) {
-		n := testing.AllocsPerRun(100, func() {
-			batchBytesMontgomery(pts, u, scratch)
-		})
-		if n != 0 {
-			t.Errorf("Unexpected allocations: %.0f", n)
-		}
-	})
 }
 
 func TestTestBase64Prefix(t *testing.T) {
@@ -155,4 +122,27 @@ func TestParsePublicKey(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFindBatchPoint(t *testing.T) {
+	assertEqual := func(a, b any) {
+		t.Helper()
+		if !reflect.DeepEqual(a, b) {
+			t.Error("<-- see")
+		}
+	}
+
+	p0, err := parsePublicKey("qkHBetbXfAxsmr0jH6Zs6Dx1ZEReO9WBZCoNREce0gE=")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const expectedOffset uint64 = 92950
+
+	offset, ok := findBatchPoint(context.Background(), p0, 0, 1024, testBase64Prefix("AY/"), 0)
+	assertEqual(true, ok)
+	assertEqual(expectedOffset, offset)
+
+	p := new(edwards25519.Point).Add(p0, new(edwards25519.Point).ScalarMult(scalarFromUint64(offset), pointOffset))
+	assertEqual("AY/yq7zukqRmMUzqqPFmtqXJdAcbmh8mn4rMgtjVnGI=", base64.StdEncoding.EncodeToString(p.BytesMontgomery()))
 }

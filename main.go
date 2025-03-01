@@ -31,7 +31,6 @@ var (
 	// Ed25519 group's cofactor
 	scalarOffset = scalarFromBytes(8)
 	pointOffset  = new(edwards25519.Point).ScalarBaseMult(scalarOffset)
-	feTwo        = new(field.Element).Add(new(field.Element).One(), new(field.Element).One())
 )
 
 func main() {
@@ -255,26 +254,30 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 
 	n := skip
 
-	offsets := make([]affineCached, batchSize)
-	projections := make([]projYT, batchSize)
-	u := make([]field.Element, batchSize)
-	scratch := make([][]field.Element, 4)
+	ua := make([]field.Element, batchSize+1)
+	ub := make([]field.Element, batchSize+1)
+	u := make([]field.Element, batchSize+1)
+	scratch := make([][]field.Element, 2)
 
 	for i := range scratch {
-		scratch[i] = make([]field.Element, batchSize)
+		scratch[i] = make([]field.Element, batchSize+1)
 	}
 
+	// offsets[i] = i * pointOffset
+	offsets := make([]affine, batchSize)
 	offsets[0].zero()
-	oi := new(edwards25519.Point).Set(pointOffset)
+	poi := new(edwards25519.Point).Set(pointOffset)
 	for i := 1; i < len(offsets); i++ {
-		offsets[i].fromP3(oi)
-		oi.Add(oi, pointOffset)
+		offsets[i].fromP3(poi)
+		poi.Add(poi, pointOffset)
 	}
-	batchOffset := new(affineCached).fromP3(oi)
+	batchOffset := poi // batchSize * pointOffset
 
-	pa := new(affineCached).fromP3(p)
+	// Starting point for the current batch
+	pa := new(affine).fromP3(p)
 
 	var bm [32]byte
+	// Loop body complexity: (6M + 4A)*batchSize + 278M + 9A
 	for {
 		select {
 		case <-ctx.Done():
@@ -282,13 +285,23 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		default:
 		}
 
-		for i := range projections {
-			projections[i].addAffine(pa, &offsets[i])
+		// Complexity: (2M + 4A)*batchSize
+		for i := range batchSize {
+			sumU(pa, &offsets[i], &ua[i], &ub[i])
 		}
 
-		batchProjectionBytesMontgomery(projections, u, scratch)
+		// Complexity: 9M + 9A
+		p.Add(p, batchOffset)
 
-		for i := range projections {
+		// Piggy-back on vector division to calculate p.zInv
+		_, _, Z, _ := p.ExtendedCoordinates()
+		ua[batchSize].One()
+		ub[batchSize].Set(Z)
+
+		// Complexity: 262M + 4M*(batchSize+1)
+		vectorDivision(ua, ub, u, scratch)
+
+		for i := range batchSize {
 			copy(bm[:], u[i].Bytes()) // eliminate field.Element.Bytes() allocations
 			if test(bm[:]) {
 				return n + uint64(i), true
@@ -296,7 +309,8 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		}
 
 		n += uint64(batchSize)
-		pa.fromP1xP1(new(projP1xP1).addAffine(pa, batchOffset))
+		// Complexity: 3M
+		pa.fromP3zInv(p, &u[batchSize])
 
 		if limit > 0 {
 			if limit <= uint64(batchSize) {
@@ -306,6 +320,28 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 			limit -= uint64(batchSize)
 		}
 	}
+}
+
+// sumU returns u-Montgomery coordinate of p + q as a fraction u = ua / ub
+// Complexity: 2M + 4A
+func sumU(p, q *affine, ua, ub *field.Element) {
+	// Affine addition formulae (independent of d) for twisted Edwards curves
+	// https://eprint.iacr.org/2008/522.pdf
+	//
+	// y3 = (x1*y1 − x2*y2) / (x1*y2 − y1*x2) = nom/den
+	var nom, den field.Element
+
+	nom.Subtract(&p.XY, &q.XY)
+	den.Subtract(
+		new(field.Element).Multiply(&p.X, &q.Y),
+		new(field.Element).Multiply(&p.Y, &q.X),
+	)
+
+	// https://www.rfc-editor.org/rfc/rfc7748.html#section-4.1
+	// (u, v) = ((1+y)/(1-y), sqrt(-486664)*u/x)
+	// u = (1 + y) / (1 - y) = (1 + nom/den) / (1 - nom/den) = (den + nom) / (den - nom) = ua/ub
+	ua.Add(&den, &nom)
+	ub.Subtract(&den, &nom)
 }
 
 func scalarToKeyBytes(s *edwards25519.Scalar) []byte {
@@ -435,57 +471,6 @@ func randUint64() uint64 {
 	return num
 }
 
-// batchBytesMontgomery is equivalent to calling [edwards25519.Point.BytesMontgomery] for each point
-// except that it uses [vectorDivision] and thus uses less point multiplications.
-//
-// All input slices must be of the same length n.
-// Result bytes are encoded into u using scratch which should be at least 4 slices of length n.
-//
-// batchBytesMontgomery uses:
-//
-//	n additions
-//	n subtractions
-//	vectorDivision = 265+4*(n-1)+1 multiplications
-//
-// i.e. ~4*n multiplications for large n.
-func batchBytesMontgomery(pts []edwards25519.Point, u []field.Element, scratch [][]field.Element) {
-	// RFC 7748, Section 4.1 provides the bilinear map to calculate the
-	// Montgomery u-coordinate
-	//
-	// u = (Z + Y) / (Z - Y) = x / y
-	x := scratch[0]
-	y := scratch[1]
-
-	for i, v := range pts {
-		_, Y, Z, _ := v.ExtendedCoordinates()
-		x[i].Add(Z, Y)      // x = Z + Y
-		y[i].Subtract(Z, Y) // y = Z - Y
-	}
-
-	vectorDivision(x, y, u, scratch[2:]) // u = x / y
-}
-
-func batchProjectionBytesMontgomery(projections []projYT, u []field.Element, scratch [][]field.Element) {
-	// RFC 7748, Section 4.1 provides the bilinear map to calculate the
-	// Montgomery u-coordinate
-	//
-	// 		u = (Z + Y) / (Z - Y)
-	//
-	// where Y = pZ * pY and Z = pZ * pT and therefore
-	//
-	// 		u = (pT + pY) / (pT - pY) = x / y
-	//
-	x := scratch[0]
-	y := scratch[1]
-
-	for i, p := range projections {
-		x[i].Add(&p.T, &p.Y)
-		y[i].Subtract(&p.T, &p.Y)
-	}
-
-	vectorDivision(x, y, u, scratch[2:]) // u = x / y
-}
-
 // vectorDivision calculates u = x / y using scratch.
 //
 // vectorDivision uses:
@@ -493,7 +478,7 @@ func batchProjectionBytesMontgomery(projections []projYT, u []field.Element, scr
 //	4*(n-1)+1 multiplications
 //	1 invert = ~265 multiplications
 //
-// i.e. ~265+4*(n-1)+1 multiplications
+// Complexity: 262M + 4M*n
 //
 // Simultaneous field divisions: an extension of Montgomery's trick
 // David G. Harris
@@ -519,95 +504,33 @@ func vectorDivision(x, y, u []field.Element, scratch [][]field.Element) {
 	u[0].Multiply(t, &x[0])
 }
 
-type (
-	projP1xP1 struct {
-		X, Y, Z, T field.Element
-	}
+type affine struct {
+	X, Y, XY field.Element
+}
 
-	affineCached struct {
-		YplusX, YminusX, T, T2d field.Element
-	}
-
-	projYT struct {
-		Y, T field.Element
-	}
-)
-
-var (
-	// d is a constant in the curve equation.
-	d, _ = new(field.Element).SetBytes(decimalToBytes("37095705934669439343138083508754565189542113879843219016388785533085940283555"))
-	d2   = new(field.Element).Add(d, d)
-)
-
-func (v *affineCached) zero() *affineCached {
-	v.YplusX.One()
-	v.YminusX.One()
-	v.T.Zero()
-	v.T2d.Zero()
+func (v *affine) zero() *affine {
+	v.X.Zero()
+	v.Y.One()
+	v.XY.Zero()
 	return v
 }
 
-func (v *affineCached) fromP3(p *edwards25519.Point) *affineCached {
-	pX, pY, pZ, pT := p.ExtendedCoordinates()
-
-	v.YplusX.Add(pY, pX)
-	v.YminusX.Subtract(pY, pX)
-
-	var invZ field.Element
-	invZ.Invert(pZ)
-	v.YplusX.Multiply(&v.YplusX, &invZ)
-	v.YminusX.Multiply(&v.YminusX, &invZ)
-	v.T.Multiply(pT, &invZ)
-	v.T2d.Multiply(&v.T, d2)
+// Complexity: 1I + 3M = 268M
+func (v *affine) fromP3(p *edwards25519.Point) *affine {
+	X, Y, Z, _ := p.ExtendedCoordinates()
+	var zInv field.Element
+	zInv.Invert(Z)
+	v.X.Multiply(X, &zInv)
+	v.Y.Multiply(Y, &zInv)
+	v.XY.Multiply(&v.X, &v.Y)
 	return v
 }
 
-func (v *affineCached) fromP1xP1(p *projP1xP1) *affineCached {
-	pX := new(field.Element).Multiply(&p.X, &p.T)
-	pY := new(field.Element).Multiply(&p.Y, &p.Z)
-	pZ := new(field.Element).Multiply(&p.Z, &p.T)
-	pT := new(field.Element).Multiply(&p.X, &p.Y)
-
-	v.YplusX.Add(pY, pX)
-	v.YminusX.Subtract(pY, pX)
-
-	var invZ field.Element
-	invZ.Invert(pZ)
-	v.YplusX.Multiply(&v.YplusX, &invZ)
-	v.YminusX.Multiply(&v.YminusX, &invZ)
-	v.T.Multiply(pT, &invZ)
-	v.T2d.Multiply(&v.T, d2)
-	return v
-}
-
-func (v *projP1xP1) addAffine(p, q *affineCached) *projP1xP1 {
-	var PP, MM, TT2d field.Element
-
-	PP.Multiply(&p.YplusX, &q.YplusX)
-	MM.Multiply(&p.YminusX, &q.YminusX)
-	TT2d.Multiply(&p.T, &q.T2d)
-
-	Z2 := feTwo
-
-	v.X.Subtract(&PP, &MM)
-	v.Y.Add(&PP, &MM)
-	v.Z.Add(Z2, &TT2d)
-	v.T.Subtract(Z2, &TT2d)
-	return v
-}
-
-func (v *projYT) addAffine(p, q *affineCached) *projYT {
-	var PP, MM, TT2d field.Element
-
-	PP.Multiply(&p.YplusX, &q.YplusX)
-	MM.Multiply(&p.YminusX, &q.YminusX)
-	TT2d.Multiply(&p.T, &q.T2d)
-
-	Z2 := feTwo
-
-	// v.X.Subtract(&PP, &MM)
-	v.Y.Add(&PP, &MM)
-	// v.Z.Add(Z2, &TT2d)
-	v.T.Subtract(Z2, &TT2d)
+// Complexity: 3M
+func (v *affine) fromP3zInv(p *edwards25519.Point, zInv *field.Element) *affine {
+	X, Y, _, _ := p.ExtendedCoordinates()
+	v.X.Multiply(X, zInv)
+	v.Y.Multiply(Y, zInv)
+	v.XY.Multiply(&v.X, &v.Y)
 	return v
 }
