@@ -3,8 +3,9 @@
 # This script demonstrates blind prefix search,
 # i.e. when worker does not know the private key.
 #
+set -euo pipefail
 
-prefix=AY/
+prefix=${1:-AY/}
 
 # Generate secure staring private key
 private=$(wg genkey)

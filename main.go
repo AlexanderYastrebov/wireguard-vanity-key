@@ -25,11 +25,11 @@ import (
 	"filippo.io/edwards25519/field"
 )
 
+// Ed25519 group's cofactor
+const ed25519GroupCofactor = 8
+
 var (
-	// l = 2^252 + 27742317777372353535851937790883648493 == 2^252 + smallScalar
-	smallScalar = scalarFromBytes(decimalToBytes("27742317777372353535851937790883648493")...)
-	// Ed25519 group's cofactor
-	scalarOffset = scalarFromBytes(8)
+	scalarOffset = scalarFromBytes(ed25519GroupCofactor)
 	pointOffset  = new(edwards25519.Point).ScalarBaseMult(scalarOffset)
 )
 
@@ -53,7 +53,7 @@ func main() {
 	flag.StringVar(&config.output, "output", "", "use \"offset\" to print offset only")
 	flag.Parse()
 
-	var s0 *edwards25519.Scalar
+	var s0b []byte
 	var p0 *edwards25519.Point
 	var err error
 
@@ -63,7 +63,12 @@ func main() {
 			panic(err)
 		}
 	} else {
-		s0, p0 = newPair()
+		s0b = make([]byte, 32)
+		if _, err := io.ReadFull(rand.Reader, s0b); err != nil {
+			panic(err)
+		}
+		clampKeyBytes(s0b)
+		_, p0 = newPairFrom(s0b)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -87,10 +92,13 @@ func main() {
 		p := new(edwards25519.Point).Add(p0, po)
 		public = base64.StdEncoding.EncodeToString(p.BytesMontgomery())
 
-		if s0 != nil {
-			so := new(edwards25519.Scalar).Multiply(scalarN, scalarOffset)
-			s := new(edwards25519.Scalar).Add(s0, so)
-			private = base64.StdEncoding.EncodeToString(scalarToKeyBytes(s))
+		if len(s0b) > 0 {
+			s0 := fieldElementFromBytes(s0b)
+			so := fieldElementFromUint64(n)
+			so.Mult32(so, ed25519GroupCofactor)
+			s := s0.Add(s0, so)
+
+			private = base64.StdEncoding.EncodeToString(s.Bytes())
 		}
 	}
 
@@ -119,40 +127,39 @@ func cmdAdd(args []string) {
 	fs.StringVar(&config.prefix, "prefix", "", "prefix of base64-encoded public key")
 	fs.Parse(args)
 
-	in, err := io.ReadAll(io.LimitReader(os.Stdin, 44))
-	if err != nil {
+	in := make([]byte, 44)
+	if _, err := io.ReadFull(os.Stdin, in); err != nil {
 		panic(err)
 	}
-	private := make([]byte, base64.StdEncoding.DecodedLen(len(in)))
-	if n, err := base64.StdEncoding.Decode(private, in); err != nil {
+
+	s0b := make([]byte, 32)
+	if n, err := base64.StdEncoding.Decode(s0b, in); err != nil {
 		panic(err)
 	} else if n != 32 {
 		panic(fmt.Sprintf("Wrong private key length: %d", n))
-	} else {
-		private = private[:n]
 	}
+	clampKeyBytes(s0b)
 
-	s, _ := newPairFrom(private)
+	s0 := fieldElementFromBytes(s0b)
+	so := fieldElementFromUint64(config.offset)
+	so.Mult32(so, ed25519GroupCofactor)
 
 	// Worker starts search from a public key which corresponds to two points P and -P
 	// but [parsePublicKey] returns (arbitrary?) one.
-	// To find the right private key calculate both
-	//     s + offset*scalarOffset
-	//     s - offset*scalarOffset
+	// To find the right private key calculate both:
+	//     s0 + offset*scalarOffset
+	//     s0 - offset*scalarOffset
 	// and pick the one whose public key has the right prefix.
-	so := edwards25519.NewScalar().Multiply(scalarFromUint64(config.offset), scalarOffset)
+	sPlus := new(field.Element).Add(s0, so)
+	sMinus := new(field.Element).Subtract(s0, so)
 
-	sPlus := edwards25519.NewScalar().Add(s, so)
-	sMinus := edwards25519.NewScalar().Subtract(s, so)
-
-	skPlus := base64.StdEncoding.EncodeToString(scalarToKeyBytes(sPlus))
-	skMinus := base64.StdEncoding.EncodeToString(scalarToKeyBytes(sMinus))
-
-	pPlus := new(edwards25519.Point).ScalarBaseMult(sPlus)
+	_, pPlus := newPairFrom(sPlus.Bytes())
 	pkPlus := base64.StdEncoding.EncodeToString(pPlus.BytesMontgomery())
-
-	pMinus := new(edwards25519.Point).ScalarBaseMult(sMinus)
+	_, pMinus := newPairFrom(sMinus.Bytes())
 	pkMinus := base64.StdEncoding.EncodeToString(pMinus.BytesMontgomery())
+
+	skPlus := base64.StdEncoding.EncodeToString(sPlus.Bytes())
+	skMinus := base64.StdEncoding.EncodeToString(sMinus.Bytes())
 
 	if config.prefix != "" {
 		if strings.HasPrefix(pkPlus, config.prefix) {
@@ -184,10 +191,17 @@ func newPairFrom(key []byte) (*edwards25519.Scalar, *edwards25519.Point) {
 	if err != nil {
 		panic(err)
 	}
+	return s, new(edwards25519.Point).ScalarBaseMult(s)
+}
 
-	p := new(edwards25519.Point).ScalarBaseMult(s)
-
-	return s, p
+// clampKeyBytes applies the buffer pruning described in RFC 8032,
+// Section 5.1.5 (also known as clamping) and returns true if key has changed.
+func clampKeyBytes(key []byte) bool {
+	k0, k31 := key[0], key[31]
+	key[0] &= 248
+	key[31] &= 63
+	key[31] |= 64
+	return k0 != key[0] || k31 != key[31]
 }
 
 // parsePublicKey decodes base64-encoded public key
@@ -202,7 +216,10 @@ func parsePublicKey(pk string) (*edwards25519.Point, error) {
 		return nil, fmt.Errorf("wrong public key length")
 	}
 
-	u, _ := new(field.Element).SetBytes(pkb)
+	u, err := new(field.Element).SetBytes(pkb)
+	if err != nil {
+		return nil, err
+	}
 
 	// y = (u - 1) / (u + 1)
 	var y, n, d, r field.Element
@@ -344,42 +361,6 @@ func sumU(p, q *affine, ua, ub *field.Element) {
 	ub.Subtract(&den, &nom)
 }
 
-func scalarToKeyBytes(s *edwards25519.Scalar) []byte {
-	// We can't use Scalars to add "l" and produce the aliases: any addition
-	// we do on the Scalar will be reduced immediately. But we can add
-	// "small", and then manually adjust the high-end byte, to produce an
-	// array of bytes whose value is s+kl
-	//
-	// The aliases (with high probability) have distinct
-	// high-order bits: 0b0001, 0b0010, etc. We want one of the four aliases
-	// whose high-order bits are 0b01xx: these bits will survive the high-end
-	// clamping unchanged. These are where k=[4..7].
-	//
-	// The three low-order bits will be some number N. Each alias adds l%8 == 5 to
-	// this low end:
-	//
-	// $ echo '(2^252 + 27742317777372353535851937790883648493) % 8' | bc
-	// 5
-	//
-	// So the first alias (k=1) will end in N+5, the second
-	// (k=2) will end in N+2 (since (5+5)%8 == 2). Our k=4..7 yields
-	// N+4,N+1,N+6,N+3. One of these values might be all zeros. That alias
-	// will survive the low-end clamping unchanged.
-
-	lowBits := s.Bytes()[0] & 0b111
-	// Solve (lowBits + k*5) % 8 == 0 for k:
-	// k := [8]byte{0, 0, 6, 0, 4, 7, 0, 5}[lowBits]
-	k := [8]byte{0, 3, 6, 1, 4, 7, 2, 5}[lowBits]
-	if k < 4 { // TODO: why k is mostly one of 4, 5, 6, 7 when scalarOffset is Ed25519 group's cofactor?
-		panic("invalid scalar first byte (lowBits)")
-	}
-
-	aliasBytes := edwards25519.NewScalar().MultiplyAdd(smallScalar, scalarFromBytes(k), s).Bytes()
-	aliasBytes[31] += (k << 4)
-
-	return aliasBytes
-}
-
 func scalarFromBytes(x ...byte) *edwards25519.Scalar {
 	var xb [64]byte
 	copy(xb[:], x)
@@ -397,17 +378,20 @@ func scalarFromUint64(n uint64) *edwards25519.Scalar {
 	return scalarFromBytes(nb[:]...)
 }
 
-func decimalToBytes(d string) []byte {
-	i, ok := new(big.Int).SetString(d, 10)
-	if !ok {
-		panic("invalid decimal string " + d)
+func fieldElementFromBytes(x []byte) *field.Element {
+	var buf [32]byte
+	copy(buf[:], x)
+	fe, err := new(field.Element).SetBytes(buf[:])
+	if err != nil {
+		panic(err)
 	}
-	b := i.Bytes()
-	// convert to little endian
-	for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
-		b[i], b[j] = b[j], b[i]
-	}
-	return b
+	return fe
+}
+
+func fieldElementFromUint64(n uint64) *field.Element {
+	var nb [8]byte
+	binary.LittleEndian.PutUint64(nb[:], n)
+	return fieldElementFromBytes(nb[:])
 }
 
 func testBase64Prefix(prefix string) func([]byte) bool {
