@@ -266,35 +266,48 @@ func findPointParallel(ctx context.Context, workers int, p0 *edwards25519.Point,
 }
 
 func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, batchSize int, test func([]byte) bool, limit uint64) (uint64, bool) {
+	if batchSize < 0 || batchSize%2 != 0 {
+		panic("batchSize must be non-negative and even")
+	}
+
 	skipOffset := new(edwards25519.Point).ScalarMult(scalarFromUint64(skip), pointOffset)
 	p := new(edwards25519.Point).Add(p0, skipOffset)
 
 	n := skip
 
-	ua := make([]field.Element, batchSize+1)
-	ub := make([]field.Element, batchSize+1)
-	u := make([]field.Element, batchSize+1)
+	ua := make([]field.Element, batchSize+2)
+	ub := make([]field.Element, batchSize+2)
+	u := make([]field.Element, batchSize+2)
 	scratch := make([][]field.Element, 2)
 
 	for i := range scratch {
-		scratch[i] = make([]field.Element, batchSize+1)
+		scratch[i] = make([]field.Element, batchSize+2)
 	}
 
-	// offsets[i] = i * pointOffset
-	offsets := make([]affine, batchSize)
-	offsets[0].zero()
+	// offsets[i] = (i+1) * pointOffset
+	offsets := make([]affine, batchSize/2)
 	poi := new(edwards25519.Point).Set(pointOffset)
-	for i := 1; i < len(offsets); i++ {
+	for i := range batchSize/2 - 1 {
 		offsets[i].fromP3(poi)
 		poi.Add(poi, pointOffset)
 	}
-	batchOffset := poi // batchSize * pointOffset
+	// batchOffset = (batchSize+1) * pointOffset
+	batchOffset := new(edwards25519.Point).Set(pointOffset)
+	if batchSize > 0 {
+		offsets[batchSize/2-1].fromP3(poi)
+		batchOffset.Add(batchOffset, poi)
+		batchOffset.Add(batchOffset, poi)
+		p.Add(p, poi)
+	}
 
-	// Starting point for the current batch
+	// Center point for the current batch
 	pa := new(affine).fromP3(p)
 
 	var bm [32]byte
-	// Loop body complexity: (6M + 4A)*batchSize + 278M + 9A
+	// One iteration tests batchSize+1 points of the
+	// batch = {p − batchSize/2*pointOffset, ... , p − pointOffset, p, p + pointOffset, ... , p + batchSize/2*pointOffset}
+	//
+	// Complexity: (5M + 4A)*batchSize + 282M + 11A
 	for {
 		select {
 		case <-ctx.Done():
@@ -302,32 +315,74 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 		default:
 		}
 
-		// Complexity: (2M + 4A)*batchSize
-		for i := range batchSize {
-			sumU(pa, &offsets[i], &ua[i], &ub[i])
+		// Calculate u-coordinates of (pa + offsets[i]), (pa − offsets[i]) and pa
+		// points on a Montgomery curve as a ratio u = ua / ub
+		//
+		// Affine addition formulae (independent of d) for twisted Edwards curves,
+		// see https://eprint.iacr.org/2008/522.pdf
+		//
+		// y3 = (x1*y1 − x2*y2) / (x1*y2 − y1*x2) = nom / den
+		//
+		// Symmetric negative point p2' = −p2 has y2' = y2 and x2' = −x2, therefore
+		//
+		// y3' = (x1*y1 + x2*y2) / (x1*y2 + y1*x2)
+		//
+		// The u-coordinate on a Montgomery curve,
+		// see https://www.rfc-editor.org/rfc/rfc7748.html#section-4.1
+		//
+		// u = (1 + y) / (1 − y) = (1 + nom/den) / (1 − nom/den) = (den + nom) / (den − nom) = ua / ub
+		//
+		// Complexity: (2M + 8A)*batchSize/2 + 2A = (1M + 4A)*batchSize + 2A
+		for i := range batchSize / 2 {
+			p1, p2 := pa, &offsets[i]
+
+			var nom, den, x1y2, y1x2 field.Element
+
+			x1y2.Multiply(&p1.X, &p2.Y)
+			y1x2.Multiply(&p1.Y, &p2.X)
+
+			// p3 = p1 + p2
+			// y3 = (x1*y1 − x2*y2) / (x1*y2 − y1*x2) = nom / den
+			// u = (den + nom) / (den − nom)
+			nom.Subtract(&p1.XY, &p2.XY)
+			den.Subtract(&x1y2, &y1x2)
+			ua[batchSize/2+1+i].Add(&den, &nom)
+			ub[batchSize/2+1+i].Subtract(&den, &nom)
+
+			// p3' = p1 − p2
+			// y3' = (x1*y1 + x2*y2) / (x1*y2 + y1*x2) = nom / den
+			// u' = (den + nom) / (den − nom)
+			nom.Add(&p1.XY, &p2.XY)
+			den.Add(&x1y2, &y1x2)
+			ua[batchSize/2-1-i].Add(&den, &nom)
+			ub[batchSize/2-1-i].Subtract(&den, &nom)
 		}
+		// pa is the center point of the batch
+		ua[batchSize/2].Add(new(field.Element).One(), &pa.Y)
+		ub[batchSize/2].Subtract(new(field.Element).One(), &pa.Y)
 
 		// Complexity: 9M + 9A
 		p.Add(p, batchOffset)
 
-		// Piggy-back on vector division to calculate p.zInv
-		_, _, Z, _ := p.ExtendedCoordinates()
-		ua[batchSize].One()
-		ub[batchSize].Set(Z)
+		// Piggyback on vector division to calculate 1/p.Z
+		_, _, pZ, _ := p.ExtendedCoordinates()
+		ua[batchSize+1].One()
+		ub[batchSize+1].Set(pZ)
+		pZinv := &u[batchSize+1]
 
-		// Complexity: 262M + 4M*(batchSize+1)
+		// Complexity: 262M + 4M*(batchSize+2) = 4M*batchSize + 270M
 		vectorDivision(ua, ub, u, scratch)
 
-		for i := range batchSize {
+		for i := range batchSize + 1 {
 			copy(bm[:], u[i].Bytes()) // eliminate field.Element.Bytes() allocations
 			if test(bm[:]) {
 				return n + uint64(i), true
 			}
 		}
 
-		n += uint64(batchSize)
+		n += uint64(batchSize + 1)
 		// Complexity: 3M
-		pa.fromP3zInv(p, &u[batchSize])
+		pa.fromP3zInv(p, pZinv)
 
 		if limit > 0 {
 			if limit <= uint64(batchSize) {
@@ -337,28 +392,6 @@ func findBatchPoint(ctx context.Context, p0 *edwards25519.Point, skip uint64, ba
 			limit -= uint64(batchSize)
 		}
 	}
-}
-
-// sumU returns u-Montgomery coordinate of p + q as a fraction u = ua / ub
-// Complexity: 2M + 4A
-func sumU(p, q *affine, ua, ub *field.Element) {
-	// Affine addition formulae (independent of d) for twisted Edwards curves
-	// https://eprint.iacr.org/2008/522.pdf
-	//
-	// y3 = (x1*y1 − x2*y2) / (x1*y2 − y1*x2) = nom/den
-	var nom, den field.Element
-
-	nom.Subtract(&p.XY, &q.XY)
-	den.Subtract(
-		new(field.Element).Multiply(&p.X, &q.Y),
-		new(field.Element).Multiply(&p.Y, &q.X),
-	)
-
-	// https://www.rfc-editor.org/rfc/rfc7748.html#section-4.1
-	// (u, v) = ((1+y)/(1-y), sqrt(-486664)*u/x)
-	// u = (1 + y) / (1 - y) = (1 + nom/den) / (1 - nom/den) = (den + nom) / (den - nom) = ua/ub
-	ua.Add(&den, &nom)
-	ub.Subtract(&den, &nom)
 }
 
 func scalarFromBytes(x ...byte) *edwards25519.Scalar {

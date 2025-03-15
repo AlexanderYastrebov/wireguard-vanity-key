@@ -31,12 +31,12 @@ $ docker run  ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest -prefix=202
 
 ## Performance
 
-The tool checks ~26'000'000 keys per second on a test machine:
+The tool checks ~29'000'000 keys per second on a test machine:
 
 ```console
 $ go run . -prefix=GoodLuckWithThisPrefix -timeout=20s
 private                                      public                                       attempts   duration   attempts/s
--                                            GoodLuckWithThisPrefix...                    520729600  20s        26016401
+-                                            GoodLuckWithThisPrefix...                    583920640  20s        29194831
 ```
 
 In practice it finds 4-character prefix in a second and 5-character prefix in a minute:

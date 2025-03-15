@@ -46,7 +46,7 @@ var testPrefix = testBase64Prefix("GoodLuckWithThisPrefix")
 
 func BenchmarkFindBatchPoint(b *testing.B) {
 	for _, batchSize := range []int{
-		1, 32, 64, 128, 256, 512, 1024,
+		2, 32, 64, 128, 256, 512, 1024,
 		2048, 4096, 8192,
 	} {
 		b.Run(fmt.Sprintf("%d", batchSize), func(b *testing.B) {
@@ -55,8 +55,10 @@ func BenchmarkFindBatchPoint(b *testing.B) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			skip := randUint64()
+
 			b.ResetTimer()
-			findBatchPoint(ctx, p0, randUint64(), batchSize, testPrefix, uint64(b.N))
+			findBatchPoint(ctx, p0, skip, batchSize, testPrefix, uint64(b.N))
 		})
 	}
 }
@@ -142,29 +144,27 @@ func TestFindBatchPoint(t *testing.T) {
 		assertEqual(t, "AY/yq7zukqRmMUzqqPFmtqXJdAcbmh8mn4rMgtjVnGI=", base64.StdEncoding.EncodeToString(p.BytesMontgomery()))
 	})
 
-	t.Run("skip", func(t *testing.T) {
-		for _, skip := range []uint64{
-			0,
-			1,
-			10,
-			math.MaxUint64 / 2, // TODO: fix overflow skip+offset
-		} {
-			t.Run(fmt.Sprintf("%d", skip), func(t *testing.T) {
-				s0, p0 := newPair()
-				t.Logf("s0: %s", base64.StdEncoding.EncodeToString(s0.Bytes()))
-				t.Logf("p0: %s", base64.StdEncoding.EncodeToString(p0.BytesMontgomery()))
+	t.Run("params", func(t *testing.T) {
+		// TODO: fix overflow skip+offset
+		for _, skip := range []uint64{0, 1, 2, 3, 10, math.MaxUint64 / 2} {
+			for _, batchSize := range []int{0, 2, 512, 1024} {
+				t.Run(fmt.Sprintf("skip=%d,batchSize=%d", skip, batchSize), func(t *testing.T) {
+					s0, p0 := newPair()
+					t.Logf("s0: %s", base64.StdEncoding.EncodeToString(s0.Bytes()))
+					t.Logf("p0: %s", base64.StdEncoding.EncodeToString(p0.BytesMontgomery()))
 
-				offset, ok := findBatchPoint(context.Background(), p0, skip, 1024, testBase64Prefix("AY/"), 0)
-				assertEqual(t, true, ok)
+					offset, ok := findBatchPoint(context.Background(), p0, skip, batchSize, testBase64Prefix("AY/"), 0)
+					assertEqual(t, true, ok)
 
-				so := new(edwards25519.Scalar).Multiply(scalarFromUint64(offset), scalarOffset)
-				s := new(edwards25519.Scalar).Add(s0, so)
-				p := new(edwards25519.Point).ScalarBaseMult(s)
-				t.Logf("s: %s", base64.StdEncoding.EncodeToString(s0.Bytes()))
-				t.Logf("p: %s", base64.StdEncoding.EncodeToString(p0.BytesMontgomery()))
+					so := new(edwards25519.Scalar).Multiply(scalarFromUint64(offset), scalarOffset)
+					s := new(edwards25519.Scalar).Add(s0, so)
+					p := new(edwards25519.Point).ScalarBaseMult(s)
+					t.Logf("s: %s", base64.StdEncoding.EncodeToString(s0.Bytes()))
+					t.Logf("p: %s", base64.StdEncoding.EncodeToString(p0.BytesMontgomery()))
 
-				assertEqual(t, true, strings.HasPrefix(base64.StdEncoding.EncodeToString(p.BytesMontgomery()), "AY/"))
-			})
+					assertEqual(t, true, strings.HasPrefix(base64.StdEncoding.EncodeToString(p.BytesMontgomery()), "AY/"))
+				})
+			}
 		}
 	})
 }
