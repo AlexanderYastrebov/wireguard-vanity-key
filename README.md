@@ -61,6 +61,71 @@ Each additional character increases search time by a factor of 64.
 
 The tool supports blind search, i.e., when the worker does not know the private key. See [demo-blind.sh](demo-blind.sh).
 
+## Kubernetes
+
+You can run the tool in a distributed manner in Kubernetes cluster using the [demo-k8s.yaml](demo-k8s.yaml) manifest
+to search for a vanity key without exposing the private key:
+
+```console
+$ # Generate secure starting key pair
+$ wg genkey | tee /dev/stderr | wg pubkey
+YI5+UcKmyLdeRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU=
+startkQgqI9Gv1IX7eNa2qeFhpYBRDwpz40JIAAYOSk=
+
+$ # Edit demo-k8s.yaml to configure prefix, starting public key, parallelism, and resource limits 💸
+
+$ # Create search job
+$ kubectl apply -f demo-k8s.yaml
+job.batch/wvk created
+
+$ # Check job
+$ kubectl get job wvk
+NAME   STATUS    COMPLETIONS   DURATION   AGE
+wvk    Running   0/10          2m53s      2m53s
+
+$ # Check pods
+$ kubectl get pods --selector=batch.kubernetes.io/job-name=wvk
+NAME         READY   STATUS    RESTARTS   AGE
+wvk-0-8tdz5  1/1     Running   0          3m8s
+wvk-1-pmnkn  1/1     Running   0          3m8s
+wvk-2-2ls7m  1/1     Running   0          3m8s
+wvk-3-rd7gx  1/1     Running   0          3m8s
+wvk-4-jqksz  1/1     Running   0          3m8s
+wvk-5-vj6gd  1/1     Running   0          3m8s
+wvk-6-vhgmc  1/1     Running   0          3m8s
+wvk-7-drr98  1/1     Running   0          3m8s
+wvk-8-tmb6c  1/1     Running   0          3m8s
+wvk-9-gxlp2  1/1     Running   0          3m8s
+
+$ # Check resource usage
+$ kubectl top pods --selector=batch.kubernetes.io/job-name=wvk
+
+$ # Wait for the job to complete
+$ kubectl wait --for=condition=complete job/wvk --timeout=1h
+job.batch/wvk condition met
+
+$ # Job is complete
+$ kubectl get job wvk
+NAME   STATUS     COMPLETIONS   DURATION   AGE
+wvk    Complete   1/999999      34m        37m
+
+$ # Get found offset from the logs
+$ kubectl logs jobs/wvk
+7538451707115552752
+
+$ # Generate new private vanity key by offsetting the starting private key
+$ echo YI5+UcKmyLdeRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU= | wireguard-vanity-key add --offset=7538451707115552752 --prefix=wvk+k8s
+4I4EWan32HJbRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU=
+
+$ # Get the vanity public key
+$ echo 4I4EWan32HJbRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU= | wg pubkey
+wvk+k8shgsJcW5EKet2AkViKc7a/0Ud8/EDOy91aCQg=
+
+$ # Delete the job
+$ kubectl delete job wvk
+job.batch "wvk" deleted
+```
+
 ## Similar tools
 
 * [wireguard-vanity-address](https://github.com/warner/wireguard-vanity-address)
@@ -91,8 +156,8 @@ Inspired by [wireguard-vanity-address "faster algorithm"](https://github.com/war
 instead of doing full scalar multiplication for each candidate, this tool applies a point increment technique that reduces the number of multiplications:
 ```
 public_key0 = private_key0 × base_point
-public_key1 = (private_key0 + const_offset) × base_point 
-            = private_key0 × base_point + const_offset × base_point 
+public_key1 = (private_key0 + const_offset) × base_point
+            = private_key0 × base_point + const_offset × base_point
             = public_key0 + const_offset × base_point
             = public_key0 + const_point_offset
 ```
@@ -119,7 +184,7 @@ Other tools encode the full public key to base64 and compare the prefix. This to
 
 ### 🏆 High-performance C implementation
 
-For raw speed, the C worker (`wvk`) uses [awslabs/s2n-bignum](https://github.com/awslabs/s2n-bignum) - 
+For raw speed, the C worker (`wvk`) uses [awslabs/s2n-bignum](https://github.com/awslabs/s2n-bignum) -
 a highly optimized field arithmetic library written in assembly.
 The worker supports prefix lengths up to 10 base64 characters, so the prefix check becomes a single masked integer comparison.
 These two optimizations make `wvk` ~2 times faster than the Go implementation.

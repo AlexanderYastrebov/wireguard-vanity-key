@@ -1,0 +1,39 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wvk
+  annotations:
+    kubernetes.io/description: |
+      This Kubernetes Job configuration demonstrates how to run the
+      [wireguard-vanity-key](https://github.com/AlexanderYastrebov/wireguard-vanity-key)
+      tool in a distributed manner across multiple pods.
+spec:
+  parallelism: 10 # 👈 Number of pods to run in parallel. See also resource limits below
+  activeDeadlineSeconds: 3600 # Job must complete within 1 hour
+  ttlSecondsAfterFinished: 86400 # Job will be deleted after 1 day
+  # Indexed Job with successPolicy to complete the Job when at least one pod succeeds
+  completionMode: Indexed
+  completions: 999999
+  successPolicy:
+    rules:
+      - succeededCount: 1
+  template:
+    spec:
+      restartPolicy: Never
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: wvk
+          image: ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest
+          args:
+            - --prefix
+            - wvk+k8s # 👈 Vanity prefix to find
+            - --public
+            - startkQgqI9Gv1IX7eNa2qeFhpYBRDwpz40JIAAYOSk= # 👈 Starting public key, use your own ☣️
+            - --output=offset
+          resources:
+            requests:
+              cpu: 7 # 👈 Set pod size
+              memory: 64Mi # The tool does not need much memory
+            limits: # Set equal to requests
+              cpu: 7
+              memory: 64Mi
