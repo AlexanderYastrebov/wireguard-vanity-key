@@ -10,49 +10,49 @@ Compared to [similar tools](#similar-tools), it uses [the fastest search algorit
 Install the tool locally and run:
 ```console
 $ go install github.com/AlexanderYastrebov/wireguard-vanity-key@latest
-$ wireguard-vanity-key -prefix=2025
+$ wireguard-vanity-key --prefix=2025
 private                                      public                                       attempts   duration   attempts/s
-WHakaGFouuy2AxMmOdSTf2L2KWsI6a3s+gvAOKuKtH0= 2025sb38RUVI+GJg5Uk2RRPuJfhZyg4uSxfV2WDn1g8= 47423039   2s         19926032
+MuWXIBrtHVtgbTUe+1ujcaJCN6P/NnISk25dD85XsBs= 2025eq2dnBEQ3A7ak0eSwND4U9JxjNKUQ4m7407P2hE= 14478798   0s         41972460
 
 $ # verify
-$ echo WHakaGFouuy2AxMmOdSTf2L2KWsI6a3s+gvAOKuKtH0= | wg pubkey
-2025sb38RUVI+GJg5Uk2RRPuJfhZyg4uSxfV2WDn1g8=
+$ echo MuWXIBrtHVtgbTUe+1ujcaJCN6P/NnISk25dD85XsBs= | wg pubkey
+2025eq2dnBEQ3A7ak0eSwND4U9JxjNKUQ4m7407P2hE=
 ```
 
 or run the tool from the source repository:
 ```console
-$ go run . -prefix=2025
+$ go run . --prefix=2025
 ```
 
 or use the Docker image:
 ```console
 $ docker pull ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest
-$ docker run  ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest -prefix=2025
+$ docker run  ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest --prefix=2025
 ```
 
 ## Performance
 
-The tool checks ~29'000'000 keys per second on a test machine:
+The tool checks ~40'000'000 keys per second on a test machine:
 
 ```console
-$ go run . -prefix=GoodLuckWithThisPrefix -timeout=20s
+$ go run . --prefix=GoodLuckWithThisPrefix --timeout=20s
 private                                      public                                       attempts   duration   attempts/s
--                                            GoodLuckWithThisPrefix...                    583920640  20s        29194831
+-                                            GoodLuckWithThisPrefix...                    828971965  20s        41426791
 ```
 
 In practice, it finds a 4-character prefix in a second and a 5-character prefix in a minute:
 ```console
-$ while go run . -prefix=AYAYA ; do : ; done
+$ while go run . --prefix=AYAYA ; do : ; done
 private                                      public                                       attempts   duration   attempts/s
-OM9WvIxO90NRnHpMLBYbKCwRxj1KcwWVfo5EO1vftls= AYAYAgcnXbdsMwLB+nR0kkWDpIkMr+3thhfGnBEvTmM= 515859548  23s        22328225
+KpcHCJun1EI0y6K9RFvvdJpdjzh3+Nkkzvgv2VC5bA8= AYAYAUPNxFQVCDaH89bUZv0wpsJjnaaDMC5bd+9kmTM= 518645076  13s        40163680
 private                                      public                                       attempts   duration   attempts/s
-eEbiqUhcUrH6Uj1p7cycgTOspY6fMxxImSNNr1YvaEg= AYAYA4yow92Ks1wnbQeceKEWIYHhaRyezomUz9SQJic= 350598404  19s        18060407
+mMDYO7ps4ijBZSouKdASox2hCGZ7ezxLeVRGDoGX4As= AYAYAB7doErk/k70oGL8ZVWJmrzcvTmeLpZmhscjGXk= 536664464  15s        35479729
 private                                      public                                       attempts   duration   attempts/s
-OOkjEu4elrWJ4MD+OxB2kvUcKdyo482E3G3Y/tLBsmI= AYAYAW4yGEUVT/IkX3T6ZZTnz3yPS1lPxiRe0yhOCCs= 260273230  14s        17972036
+Jj349w9DiDHlJNTI7Dp0ASf/+CbJC76RFGT2b5UclFY= AYAYA5KzNUDEJpi02Q/zByE3M6dEEAsrIIXofXGrqV8= 148494933  5s         32719761
 private                                      public                                       attempts   duration   attempts/s
-+BWkcGvbkXFxNgxIrAYyJoMF1R6R3eguv5NyMsdlaEA= AYAYAQEsY0gagwZ5lGLRQYfxQ+5rl83LOPmaASvASFQ= 1094012149 56s        19446702
+aFU44Xg3OEISB1kfnBZnHaF4aZKWT19l9v7WRxvfXxc= AYAYAzc7/FNKDqAmzFhEeD6FXE/p52oxJIC/vC2+v3o= 531546815  16s        33870236
 private                                      public                                       attempts   duration   attempts/s
-aG7Rakjbn1kpc2HN7fUz1u/ZrTcYziXg7OJq2EcMWFU= AYAYAe9QZdXn36CrkOK8aoD8h92mbEHCQt1QdTBARjY= 1088287697 56s        19483959
+tFIWASiXuMVXkSH5GOxkq22Rt4FLzgvNDfnv1nhJSCE= AYAYAcleUyqWREwbYu27K3BWuYLT+WZEpFdfVXr6sDc= 1575185801 52s        30304876
 ```
 
 Each additional character increases search time by a factor of 64.
@@ -114,7 +114,7 @@ $ kubectl logs jobs/wvk
 7538451707115552752
 
 $ # Generate new private vanity key by offsetting the starting private key
-$ echo YI5+UcKmyLdeRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU= | wireguard-vanity-key add --offset=7538451707115552752 --prefix=wvk+k8s
+$ echo YI5+UcKmyLdeRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU= | wireguard-vanity-key add --offset=7538451707115552752
 4I4EWan32HJbRDqU8l3k53wrUZO9Mw23NpvB8tDtvWU=
 
 $ # Get the vanity public key
@@ -148,7 +148,9 @@ public_key = private_key × base_point
 ```
 For the WireGuard key format, this basic algorithm requires **2561** field multiplications (using [square-and-multiply](https://github.com/golang/go/commit/e005cdc62081130117a3fa30d01cd28ee076ed93)) or **743** field multiplications (using [Twisted Edwards curve](https://github.com/FiloSottile/edwards25519/commit/2941d4c8cdacb392a1b39f85adafaeae65bb50f6)) per candidate key.
 
-This tool uses only **5 (five)** field multiplications per candidate key and other optimizations, which makes it the fastest 🚀
+This tool uses only **3.5 (three and a half)** field multiplications per candidate key and other optimizations, which makes it the fastest 🚀
+
+See [vanity25519](https://github.com/AlexanderYastrebov/vanity25519) for algorithm implementation.
 
 ### ➕ Point increment approach
 
@@ -163,20 +165,17 @@ public_key1 = (private_key0 + const_offset) × base_point
 ```
 i.e., the candidate public key is obtained by point addition instead of base point multiplication,
 which requires fewer field multiplications (275 vs. 743 or ~60% faster).
-See [initial commit](https://github.com/AlexanderYastrebov/wireguard-vanity-key/commit/8c25defadec12585a80245faa40ddda2c192d423).
 
 ### 🧮 Batch field inversion
 
 Getting the public key in WireGuard format (Montgomery form) requires a field inversion, which uses **265** field multiplications.
 This tool uses the Montgomery trick to implement batch inversion, so for a batch of N candidates,
 only **1 (one)** inversion is needed, resulting in a huge speedup.
-See https://github.com/AlexanderYastrebov/wireguard-vanity-key/pull/3.
 
-### 🪞 Affine coordinates and offset symmetry
+### 🪞 Montgomery coordinates and offset symmetry
 
-The algorithm uses affine coordinates and exploits symmetries in precomputed point offsets,
-saving even more field multiplications. See https://github.com/AlexanderYastrebov/wireguard-vanity-key/pull/10, https://github.com/AlexanderYastrebov/wireguard-vanity-key/pull/12, and
-https://github.com/AlexanderYastrebov/wireguard-vanity-key/pull/14.
+The algorithm uses Montgomery coordinates and exploits symmetries in precomputed point offsets,
+saving even more field multiplications.
 
 ### ⚡ Fast base64 prefix check
 

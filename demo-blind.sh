@@ -18,8 +18,7 @@ public=$(echo $private | wg pubkey)
 offset=$(wireguard-vanity-key --prefix=$prefix --public=$public --output=offset)
 
 # Generate new private vanity key by offsetting the starting $private key.
-# Give it the $prefix to choose from two possible results.
-private_vanity=$(echo $private | wireguard-vanity-key add --offset=$offset --prefix=$prefix)
+private_vanity=$(echo $private | wireguard-vanity-key add --offset=$offset)
 
 # Print vanity key pair
 echo $private_vanity
