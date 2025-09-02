@@ -1,4 +1,4 @@
 filippo.io/edwards25519 v1.1.1-0.20250211130249-04b037b40df0 h1:eRUqXR1j52m74aiE5gU0SVyBZRcYb0DgDnpNfXRi0CE=
 filippo.io/edwards25519 v1.1.1-0.20250211130249-04b037b40df0/go.mod h1:BxyFTGdWcka3PhytdK4V28tE5sGfRvvvRV7EaN4VDT4=
-github.com/AlexanderYastrebov/vanity25519 v0.0.0-20250818133714-beaf7a074bb8 h1:DFpAMI3vypA2gLo6kHIMQIAtunbsebwBCKyXsLFgado=
-github.com/AlexanderYastrebov/vanity25519 v0.0.0-20250818133714-beaf7a074bb8/go.mod h1:ThmISa7bBMyrP+L03CX1gWbJHzH6FXuXU6tksEzGJ/w=
+github.com/AlexanderYastrebov/vanity25519 v0.0.0-20250902184634-03a25bd27049 h1:BHaLAbypJGH/6RYhX8fKRJJkSTOz/nzQNfZ8bAWmzm0=
+github.com/AlexanderYastrebov/vanity25519 v0.0.0-20250902184634-03a25bd27049/go.mod h1:HvjGmm4yjipve5Ydc9OSbrkO7LYYN7GM26vlfx/y+Qg=

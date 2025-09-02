@@ -32,27 +32,27 @@ $ docker run  ghcr.io/alexanderyastrebov/wireguard-vanity-key:latest --prefix=20
 
 ## Performance
 
-The tool checks ~40'000'000 keys per second on a test machine:
+The tool checks ~65'000'000 keys per second on a test machine:
 
 ```console
 $ go run . --prefix=GoodLuckWithThisPrefix --timeout=20s
 private                                      public                                       attempts   duration   attempts/s
--                                            GoodLuckWithThisPrefix...                    828971965  20s        41426791
+-                                            GoodLuckWithThisPrefix...                    1374379620 20s        68701706
 ```
 
 In practice, it finds a 4-character prefix in a second and a 5-character prefix in a minute:
 ```console
 $ while go run . --prefix=AYAYA ; do : ; done
 private                                      public                                       attempts   duration   attempts/s
-KpcHCJun1EI0y6K9RFvvdJpdjzh3+Nkkzvgv2VC5bA8= AYAYAUPNxFQVCDaH89bUZv0wpsJjnaaDMC5bd+9kmTM= 518645076  13s        40163680
+P15GaB7DdiKzYfCZynsClGhHVuIFilvV3zaNCgRuPn4= AYAYA++HaWPnqaCBE+xlB+GNvyUI3LLtLAoHhMIEBgs= 219066590  3s         69609692
 private                                      public                                       attempts   duration   attempts/s
-mMDYO7ps4ijBZSouKdASox2hCGZ7ezxLeVRGDoGX4As= AYAYAB7doErk/k70oGL8ZVWJmrzcvTmeLpZmhscjGXk= 536664464  15s        35479729
+7pqZA+StBeqiLjltLJQhzvCzuj75tx6HiRAOxOF68GE= AYAYAGeWrXfsnvbsv1n7FkZG3zgGmYc6sjr2HUxLJXI= 530717186  8s         67577159
 private                                      public                                       attempts   duration   attempts/s
-Jj349w9DiDHlJNTI7Dp0ASf/+CbJC76RFGT2b5UclFY= AYAYA5KzNUDEJpi02Q/zByE3M6dEEAsrIIXofXGrqV8= 148494933  5s         32719761
+M2bhXvumSXmjiiHxgV7u8uBfbS9hTXdnXlrZUYNZ1gc= AYAYAPY8KNO/tm6vLITC32eT/IKn2V/lVIz+0lcab1I= 3458371931 58s        59901869
 private                                      public                                       attempts   duration   attempts/s
-aFU44Xg3OEISB1kfnBZnHaF4aZKWT19l9v7WRxvfXxc= AYAYAzc7/FNKDqAmzFhEeD6FXE/p52oxJIC/vC2+v3o= 531546815  16s        33870236
+ALnF+zYUI9ZCGCP3/PwgkBQrVNHIsXJdZ+AYEbYt9BU= AYAYAZd81yqulNeXXi23mHIMQp8q/MecGNxUOkhXdiI= 1197282698 21s        57711372
 private                                      public                                       attempts   duration   attempts/s
-tFIWASiXuMVXkSH5GOxkq22Rt4FLzgvNDfnv1nhJSCE= AYAYAcleUyqWREwbYu27K3BWuYLT+WZEpFdfVXr6sDc= 1575185801 52s        30304876
+koJOikpom8J7fEw1E7Gb3TU5A0PBGtqGXP9KA09Mtm8= AYAYANW4FVp515jAwSpZcphIzbfjKAeuzvZVTyiERSk= 133529424  2s         55282205
 ```
 
 Each additional character increases search time by a factor of 64.
